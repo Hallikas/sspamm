@@ -60,9 +60,19 @@ def load_vars(fname, id=None):
 		if line[1:13] == "\"raw\": 'From":
 			raw = line[9:]
 			is_raw = True
+		elif line[-5:] == "\": '\n":
+			rname=line[3:-5]
+			raw = ""
+			is_raw = True
 		elif is_raw:
+# Not 'real' but more safer
+			if line == "\n": line = "\\\\n"
+# Not so safe version
+#			if line == "\n": line = "\\n"
 			if line == "',\n":
 				is_raw = False
+				buf += "\t\"%s\": '%s'," % (rname, raw)
+				raw = ""
 			else:
 				raw += line
 		elif do_skip:
@@ -74,6 +84,7 @@ def load_vars(fname, id=None):
 	fp.close()
 	vars = eval(buf)
 	if raw: vars["raw"] = raw
+	
 	return vars
 
 # Note: This should be confirmed by someone else
@@ -141,13 +152,10 @@ def show_vars(var, lvl=0):
 def main():
 	global conf
 
-	print show_vars(conf)
-	
-	save_vars(conf, "sspamm.var")
-	time.sleep(1)
-	c=load_vars("sspamm.var")
-	print show_vars(c)
-	
+#	print show_vars(conf)
+#	save_vars(conf, "sspamm.var")
+#	time.sleep(1)
+	print show_vars(load_vars("sspamm.var"))
 	cleanquit()
 
 def cleanquit():

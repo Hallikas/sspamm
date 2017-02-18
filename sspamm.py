@@ -18,6 +18,19 @@ import re
 
 from socket import gethostname
 
+## LOG_EMERG               = 0             #  system is unusable
+## LOG_ALERT               = 1             #  action must be taken immediately
+## LOG_CRIT                = 2             #  critical conditions
+## LOG_ERR                 = 3             #  error conditions
+## LOG_WARNING             = 4             #  warning conditions
+## LOG_NOTICE              = 5             #  normal but significant condition
+## LOG_INFO                = 6             #  informational
+## LOG_DEBUG               = 7             #  debug-level messages
+from syslog import \
+	LOG_EMERG, LOG_ALERT, LOG_CRIT, LOG_ERR, \
+	LOG_WARNING, LOG_NOTICE, LOG_INFO, LOG_DEBUG
+
+
 ##############################################################################
 ### Global variables / Configuration
 conf = {}
@@ -36,7 +49,7 @@ conf["runtime"] = {
 ### Variable tools (we save/load variables)
 # Checked 19.2.2017, - Semi
 def save_vars(var, fname, id=None):
-#	debug("save_vars(\"%s\")" % (fname), LOG_DEBUG, id=id)
+	debug("save_vars(\"%s\")" % (fname), LOG_DEBUG, id=id)
 	fp = open(fname, "w+b")
 	if fp: fp.write(show_vars(var))
 	fp.close()
@@ -45,7 +58,7 @@ def save_vars(var, fname, id=None):
 # Note: This should be confirmed by someone else
 # Checked 19.2.2017, - Semi - NOTE!
 def load_vars(fname, id=None):
-#	debug("load_vars(\"%s\")" % (fname), LOG_DEBUG, id=id)
+	debug("load_vars(\"%s\")" % (fname), LOG_DEBUG, id=id)
 	fp = open(fname, "r")
 	is_raw = False
 	raw = None
@@ -146,16 +159,69 @@ def show_vars(var, lvl=0):
 		st += str(var)
 	return st
 
+##############################################################################
+### Basic fileoperations (Usualy we don't need to care if it success or not)
+# Checked 19.2.2017, - Semi
+def rm(file, id=None):
+	debug("rm(\"%s\")" % (file), LOG_DEBUG, id=id)
+	try:
+		if os.path.exists(file): os.remove(file)
+	except:
+		pass
+	return
+
+# Checked 19.2.2017, - Semi
+def rmdir(path, id=None):
+	debug("rmdir(\"%s\")" % (path), LOG_DEBUG, id=id)
+	try:
+		os.rmdir(path)
+	except OSError, (errno, strerror):
+		if errno != 39: debug("%s" % sys.exc_value, LOG_ERR)
+	except:
+		debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR)
+	return
+
+# Checked 19.2.2017, - Semi
+def mkdir(path, id=None):
+	debug("mkdir(\"%s\")" % (path), LOG_DEBUG, id=id)
+	try:
+		os.makedirs(path, 0770)
+	except OSError, (errno, strerror):
+		if errno != 17: debug("%s" % sys.exc_value, LOG_ERR)
+	except:
+		debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR)
+	return
+
+# Checked 19.2.2017, - Semi
+def mv(what, where, id=None):
+	debug("mv(\"%s\" \"%s\")" % (what, where), LOG_DEBUG, id=id)
+	try:
+		os.rename(what, where)
+	except:
+		try:
+			fpin = open(what,"r")
+			fpout = open(where,"w+b")
+			while 1:
+				buf = fpin.read(1024*16)
+				if len(buf) == 0: break
+				fpout.write(buf)
+			fpin.close()
+			fpout.close()
+			rm(what)
+		except:
+			debug("move failed: %s -> %s" % (what, where), LOG_ERR)
+	return
+
 
 ##############################################################################
 ### Main Functions
+def debug(args, level=LOG_DEBUG, id=None, trace=None, verb=None):
+	return
+
 def main():
 	global conf
 
-#	print show_vars(conf)
-#	save_vars(conf, "sspamm.var")
-#	time.sleep(1)
-	print show_vars(load_vars("sspamm.var"))
+	print show_vars(conf)
 	cleanquit()
 
 def cleanquit():

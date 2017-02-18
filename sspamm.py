@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: UTF-8 -*-
 
+# Note, I will use d.m.yyyy format, that's 19 feb 2017 = 19.2.2017
+
 """Semi's SPAM Milter
 """
 __author__ = "Sami-Pekka Hallikas <semi@hallikas.com>"
@@ -32,6 +34,50 @@ conf["runtime"] = {
 
 ##############################################################################
 ### Variable tools (we save/load variables)
+# Checked 19.2.2017, - Semi
+def save_vars(var, fname, id=None):
+#	debug("save_vars(\"%s\")" % (fname), LOG_DEBUG, id=id)
+	fp = open(fname, "w+b")
+	if fp: fp.write(show_vars(var))
+	fp.close()
+	return
+
+# Note: This should be confirmed by someone else
+# Checked 19.2.2017, - Semi - NOTE!
+def load_vars(fname, id=None):
+#	debug("load_vars(\"%s\")" % (fname), LOG_DEBUG, id=id)
+	fp = open(fname, "r")
+	is_raw = False
+	raw = None
+	do_skip = False
+	buf = ""
+# Todo: This fails if variable has empty linefeeds. Like matches \n\n\n\n and saves it as variable. This need to reworked.
+	while 1:
+		line = fp.readline()
+		if len(line) < 1: break
+		if line[1:10] == "\"mime\": {":
+			do_skip = True
+		if line[1:13] == "\"raw\": 'From":
+			raw = line[9:]
+			is_raw = True
+		elif is_raw:
+			if line == "',\n":
+				is_raw = False
+			else:
+				raw += line
+		elif do_skip:
+			if line[1:3] == "},":
+				do_skip = False
+			pass
+		else:
+			buf += line
+	fp.close()
+	vars = eval(buf)
+	if raw: vars["raw"] = raw
+	return vars
+
+# Note: This should be confirmed by someone else
+# Checked 19.2.2017, - Semi
 def show_vars(var, lvl=0):
 	if lvl==0: lvl=1
 	st=""
@@ -95,8 +141,13 @@ def show_vars(var, lvl=0):
 def main():
 	global conf
 
-	time.sleep(1)
 	print show_vars(conf)
+	
+	save_vars(conf, "sspamm.var")
+	time.sleep(1)
+	c=load_vars("sspamm.var")
+	print show_vars(c)
+	
 	cleanquit()
 
 def cleanquit():

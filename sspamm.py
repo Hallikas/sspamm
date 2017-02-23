@@ -61,9 +61,61 @@ confdefaults = {
 		"sspammdir":		None,
 		"pid":			"sspamm4.pid",
 		"childs":		False,
+		"port":			"local:/tmp/sspamm4.sock",
+		"logfile":		"sspamm4.log",
+		"rrdfile":		"sspamm4.rrd",
+		"crcfile":		"sspamm4.crc",
+		"verbose":		1,
+		"offline":		3,
+		"timeme":		True,
+		"tmpdir":		"/dev/shm",
+		"savedir":		None,
+		"nonspamonly":		False,
+		"confbackup":		True,
+		"crcsave":		False,
+		"crchours":		12,
+		"watchmode":		False,
+	},
+	"filter": {
+		"defaulttests":		["connect", "helo"],
+		"domains":		[],
+		"rules":		[],
+	},
+	"actions": {
+		"connect":		"Flag",
+		"helo":			"Flag",
+		"accept":		"Accept",
+		"block":		"Reject",
+		"samefromto":		"Flag",
+		"ipfromto":		"Flag",
+		"headers":		"Flag",
+		"dyndns":		"Flag",
+		"wordscan":		"Flag",
+		"bayesian":		"Flag",
+		"rbl":			"Flag",
+		"charset":		"Flag",
+		"crc":			"Flag",
 	},
 	"settings": {
-		"ipservers":		[],
+		"ipservers":		["dnsbl-2.uceprotect.net"],
+		"maxbodysize":		1024,
+	},
+	"rules": {
+		"hide":			[],
+		"connect":		["(?#ignore)(127.0.0.1)"],
+		"helo":			[],
+		"accept":		[],
+		"block":		[],
+		"ipfromto":		[],
+		"headers":		[],
+		"charset":		[],
+		"dyndns":		[
+					"^[0-9]{1,3}[\-\.][0-9]{1,3}[\-\.][0-9]{1,3}[\-\.][0-9]{1-3}\..*",
+		],
+		"subject":		[],
+		"links":		[],
+		"blockwords":		[],
+		"blockhtml":		[],
 	},
 }
 conf = confdefaults.copy()
@@ -76,6 +128,11 @@ conf["runtime"] = {
 	"conffile":	None,
 	"conftime":	0,
 	"offline":	False,
+	"rrd":		{
+		"ham":		0,
+		"unsure":	0,
+		"spam":		0,
+	},
 }
 
 # Data types of options:
@@ -666,6 +723,8 @@ def Tconfig(childname=None, doverbose=None):
 			if childname and not (conf["main"]["pid"] and os.path.exists(conf["main"]["pid"])):
 				debug("Pid file %s missing, quiting." % (conf["main"]["pid"]), LOG_NOTICE)
 				conf["runtime"]["endtime"] = -1
+# If threaded we can't return back because Milter.runmilter does not end.
+				cleanquit()
 				break
 			else:
 # Poll configuration file every 2 seconds
@@ -725,7 +784,6 @@ def main():
 		pass
 	except:
 		debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR)
-
 	cleanquit()
 
 def cleanquit(arg1 = None, arg2 = None):

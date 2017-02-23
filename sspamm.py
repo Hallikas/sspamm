@@ -35,6 +35,17 @@ from syslog import \
 	LOG_EMERG, LOG_ALERT, LOG_CRIT, LOG_ERR, \
 	LOG_WARNING, LOG_NOTICE, LOG_INFO, LOG_DEBUG
 
+## http://sourceforge.net/projects/pymilter
+## Ubuntu: spf-milter-python or "apt-get -y install py-milter"
+##
+import Milter
+from milter import \
+       ACCEPT, CONTINUE, REJECT, DISCARD, TEMPFAIL, \
+       ADDHDRS, CHGBODY, ADDRCPT, DELRCPT, CHGHDRS
+
+try: from milter import QUARANTINE
+except: pass
+
 
 ##############################################################################
 ### Global variables / Configuration
@@ -64,6 +75,7 @@ conf["runtime"] = {
 	"starttime":	0,
 	"conffile":	None,
 	"conftime":	0,
+	"offline":	False,
 }
 
 # Data types of options:
@@ -220,6 +232,9 @@ def load_config(file):
 	except:
 		pass
 
+	conf["main"]["sspammdir"] = cp.get("main", "sspammdir")
+	if conf["main"]["sspammdir"] and conf["main"]["sspammdir"][0] not in ["/", "."]:
+		conf["main"]["sspammdir"] = "%s/%s" % (conf["runtime"]["confpath"], conf["main"]["sspammdir"])
 
 ### Everything is ready, we have config file readed into cp object. Now we need to process it.
 	for s in cp.sections():
@@ -239,13 +254,15 @@ def load_config(file):
 				conf[s][o] = cp.getdomains(s,o)
 			elif "%s/%s" % (s,o) in ["filter/rules"]:
 				conf[s][o] = cp.getrules(s,o)
-			else:
-				if s == "main" and type(conf[s][o]) is str:
+			elif s == "main":
 # Strings in main section could have 'smart tags' like %h = hostname, etc.
 # Pass thru config_variables() for rewrite
-					conf[s][o] = config_variables(cp.get(s,o))
-				else:
-					conf[s][o] = cp.get(s,o)
+				conf[s][o] = config_variables(cp.get(s,o))
+# If variable is filename or path, does it need sspammdir prefix?
+				if o in ["pid", "logfile", "savedir", "tmpdir", "crcfile", "rrdfile"]:
+					if conf[s][o] and conf[s][o][0] not in ["/", "."]: conf[s][o] = "%s/%s" % (conf["main"]["sspammdir"], conf[s][o])
+			else:
+				conf[s][o] = cp.get(s,o)
 
 # Config entry is now readed into global variable conf (single line is conf[s][o])
 # Fix datatypes, like None and boolean
@@ -276,7 +293,8 @@ def load_config(file):
 ##		t = re.sub("^", "^", re.sub("\?", ".", re.sub("\.", "\.", t)))
 ##		t = re.sub("$", "$", re.sub("\*", ".*", re.sub("\?", ".", re.sub("\.", "\.", t))))
 				elif o in ["accept", "block", "ipfromto"]:
-					pass
+					if o == "accept":
+						print show_vars(conf[s][o])
 				elif o in ["subject", "blockwords", "blockhtml"]:
 					pass
 				elif o in ["hide"]:
@@ -323,8 +341,10 @@ def config_variables(t):
 # Translate %n, %h, %s and %c variables at main section of configuration file
 	t = re.sub("%n", conf["main"]["name"], t)
 	t = re.sub("%h", conf["runtime"]["hostname"], t)
-	if conf["main"].has_key("sspammdir") and conf["main"]["sspammdir"]: t = re.sub("%s", conf["main"]["sspammdir"], t)
-	if conf["runtime"].has_key("confpath") and conf["runtime"]["confpath"]: t = re.sub("%c", conf["runtime"]["confpath"], t)
+	if conf["main"].has_key("sspammdir") and conf["main"]["sspammdir"]:
+		t = re.sub("%s", conf["main"]["sspammdir"], t)
+	if conf["runtime"].has_key("confpath") and conf["runtime"]["confpath"]:
+		t = re.sub("%c", conf["runtime"]["confpath"], t)
 	return t
 
 
@@ -547,6 +567,50 @@ def makepid(fname):
 
 ##############################################################################
 ###
+### SpamMilter Class
+###
+class SpamMilter(Milter.Milter):
+	def __init__(self):
+		self.id = Milter.uniqueID()
+		debug("SpamMilter.__init__()", LOG_DEBUG, id=self.id)
+	def _cleanup(self):
+		debug("SpamMilter._cleanup()", LOG_DEBUG, id=self.id)
+		return
+	def abort(self):
+		debug("SpamMilter.abort()", LOG_DEBUG, id=self.id)
+		self._cleanup()
+		return CONTINUE
+	def close(self):
+		debug("SpamMilter.close()", LOG_DEBUG, id=self.id)
+		return CONTINUE
+	def connect(self,host,family,hostaddr):
+		debug("SpamMilter.connect(%s, %s)" % (host,hostaddr), LOG_DEBUG, id=self.id)
+		return CONTINUE
+	def hello(self,host):
+		debug("SpamMilter.hello(%s)" % (host), LOG_DEBUG, id=self.id)
+		return CONTINUE
+	def envfrom(self,mailfrom,*vars):
+		debug("SpamMilter.envfrom(\"%s\", %s)" % (mailfrom,vars), LOG_DEBUG, id=self.id)
+		return CONTINUE
+	def envrcpt(self,rcpt,*vars):
+		debug("SpamMilter.envrcpt(\"%s\")" % (rcpt), LOG_DEBUG, id=self.id)
+		return CONTINUE
+	def header(self,field,value):
+		debug("SpamMilter.header(%s, %s)" % (field,value), LOG_DEBUG, id=self.id)
+		return CONTINUE
+	def eoh(self):
+		debug("SpamMilter.eoh()", LOG_DEBUG, id=self.id)
+		return CONTINUE
+	def body(self,chunk):
+		debug("SpamMilter.body() (chunk size: %d)" % len(chunk), LOG_DEBUG, id=self.id)
+		return CONTINUE
+	def eom(self):
+		debug("SpamMilter.eom()", LOG_DEBUG, id=self.id)
+		return CONTINUE
+
+
+##############################################################################
+###
 ### CHILD THREADS
 ###
 def Tconfig(childname=None, doverbose=None):
@@ -584,43 +648,28 @@ def Tconfig(childname=None, doverbose=None):
 			time.sleep(60)
 			continue
 		if conf["runtime"]["conftime"] < os.stat(conf["runtime"]["conffile"])[8]:
+			debug("Config file %s found." % conf["runtime"]["conffile"], LOG_NOTICE)
 			if conf["runtime"]["conftime"] > 0:
 				save_config(conf["runtime"]["conffile"])
+			conf["runtime"]["conftime"] = os.stat(conf["runtime"]["conffile"])[8]
+			conf["runtime"]["confpath"] = conf["runtime"]["conffile"][0:conf["runtime"]["conffile"].rfind("/")]
+			if childname: debug("Configuration %s reloaded" % (conf["runtime"]["conffile"]), LOG_NOTICE)
 			load_config(conf["runtime"]["conffile"])
 #			if conf["runtime"]["offline"]:
 #				if doverbose: conf["main"]["offline"] = doverbose
 #				conf["main"]["verbose"] = conf["main"]["offline"]
-			debug("Config file %s found." % conf["runtime"]["conffile"], LOG_NOTICE)
 
-			if childname:
-				debug("Configuration %s reloaded" % (conf["runtime"]["conffile"]), LOG_NOTICE)
-			conf["runtime"]["conftime"] = os.stat(conf["runtime"]["conffile"])[8]
-			conf["runtime"]["confpath"] = conf["runtime"]["conffile"][0:conf["runtime"]["conffile"].rfind("/")]
-			if conf["main"]["sspammdir"] and conf["main"]["sspammdir"][0] not in ["/", "."]: conf["main"]["sspammdir"] = "%s/%s" % (conf["runtime"]["confpath"], conf["main"]["sspammdir"])
-#
-#			for s in ["logfile", "rrdfile", "crcfile", "savedir", "pid"]:
-#				if conf["main"].has_key(s) and conf["main"][s]:
-#					if conf["main"][s] == ".":
-#						conf["main"][s] = conf["main"]["sspammdir"]
-#					if conf["main"]["sspammdir"]:
-#						conf["main"][s] = re.sub("%s", conf["main"]["sspammdir"], conf["main"][s])
-#					conf["main"][s] = re.sub("%n", conf["main"]["name"], conf["main"][s])
-#					conf["main"][s] = re.sub("%c", conf["runtime"]["confpath"], conf["main"][s])
-#					conf["main"][s] = re.sub("%h", hostname, conf["main"][s])
-#
-#					if conf["main"][s] and conf["main"][s][0] not in ["/", "."]: conf["main"][s] = "%s/%s" % (conf["main"]["sspammdir"], conf["main"][s])
-#
-#			if not conf["runtime"]["offline"] and conf["main"]["savedir"]:
-#				try: mkdir(conf["main"]["savedir"])
-#				except: pass
-#
-#		else:
-#			if childname and not (conf["main"]["pid"] and os.path.exists(conf["main"]["pid"])):
-#				debug("Pid file %s missing, quiting." % (conf["main"]["pid"]), LOG_NOTICE)
-#				conf["runtime"]["endtime"] = -1
-#				break
-#			else:
-#				time.sleep(2)
+			if not conf["runtime"]["offline"] and conf["main"]["savedir"]:
+				try: mkdir(conf["main"]["savedir"])
+				except: pass
+		else:
+			if childname and not (conf["main"]["pid"] and os.path.exists(conf["main"]["pid"])):
+				debug("Pid file %s missing, quiting." % (conf["main"]["pid"]), LOG_NOTICE)
+				conf["runtime"]["endtime"] = -1
+				break
+			else:
+# Poll configuration file every 2 seconds
+				time.sleep(2)
 		if not childname: break
 		time.sleep(1)
 	if childname: debug("Config thread quited", LOG_INFO)
@@ -664,9 +713,19 @@ def main():
 		return
 # Main loop
 	debug("Main loop", LOG_DEBUG)
-	print show_vars(conf)
 #	while os.access(conf["main"]["pid"], os.R_OK):
 #		time.sleep(1)
+	Milter.factory = SpamMilter
+	Milter.set_flags(ADDRCPT + DELRCPT + ADDHDRS + CHGHDRS + CHGBODY)
+
+	debug("Spam Filter started", LOG_INFO)
+	try:
+		Milter.runmilter(conf["main"]["name"],conf["main"]["port"],300)
+	except SystemExit:
+		pass
+	except:
+		debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR)
+
 	cleanquit()
 
 def cleanquit(arg1 = None, arg2 = None):
@@ -699,6 +758,10 @@ if __name__ == "__main__":
 	elif sys.argv[1:][0] == "pid":
 		Tconfig()
 		print conf["main"]["pid"]
+		sys.exit(0)
+	elif sys.argv[1:][0] == "conf":
+		Tconfig()
+		print show_vars(conf)
 		sys.exit(0)
 	else:
 		print """We need help here?"""

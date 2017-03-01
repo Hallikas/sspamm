@@ -46,6 +46,17 @@ from milter import \
 try: from milter import QUARANTINE
 except: pass
 
+## http://sourceforge.net/projects/pydns
+## Ubuntu: "apt-get -y install python-dns"
+try:
+	import DNS
+	from DNS import Base
+	usedns = True
+	DNS.defaults['server'].append('8.8.8.8')
+	DNS.defaults['timeout'] = 5
+except:
+	usedns = False
+
 
 ##############################################################################
 ### Global variables / Configuration
@@ -267,7 +278,7 @@ def maildef():
 		"from": [],
 		"to": [],
 		"header": {
-			"Received": [ ],
+			"Received": [],
 		},
 		"received": {
 			1: {
@@ -278,6 +289,7 @@ def maildef():
 		},
 		"rawsubject": None,
 		"raw": '',
+		"timer": {},
 	}
 
 
@@ -554,6 +566,61 @@ def show_vars(var, lvl=0):
 		st += str(var)
 	return st
 
+### Timeme
+## Used for trace processing time, so we can find if there is things that takes too long to complete
+def timeme(timer=0):
+	if timer == 0: return time.time()
+	timer = float(time.time())-float(timer)
+	if timer < 0: timer = 0
+	return float(timer)
+
+### parse_addrs
+## Get only address part of address string. Do lowercase and strip blanks.
+## Also return all parsed addresses as array.
+def parse_addrs(addr, id=None):
+	debug("parse_addrs(\"%s\")" % (addr), LOG_DEBUG, id=id)
+	addr=re.sub(" ", "", re.sub(' ?[("].*?[)"]', "", addr.lower().strip()))
+	if addr.startswith("<") or addr.endswith(">"):
+		return [addr[addr.find("<")+1:addr.rfind(">")]]
+	elif addr.find(","):
+		return addr.split(",")
+	else:
+		return [addr]
+
+### Reverse DNS query (IP -> PTR)
+def reversedns(ip, id=None):
+	global usedns
+	debug("reversedns(\"%s\")" % (ip), LOG_DEBUG, id=id)
+
+	if not usedns:
+		debug("NO DNS Module loaded", LOG_INFO, id=mail["id"])
+		return None
+	a = ip.split('.')
+
+	if a[0] == "127" or a[0] == "10" or (a[0] == "192" and a[1] == "168") or (a[0] == "169" and a[1] == "254") or (a[0] == "172" and a[1] == "16") or (a[0] == "172" and a[1] == "17"):
+		debug("* reversedns(\"%s\") = Private network" % (ip), LOG_DEBUG, id=id)
+		return None
+
+	try:
+		ptr = None
+		if DNS.defaults['server'] == []: DNS.DiscoverNameServers()
+		a.reverse()
+		b = '.'.join(a)+'.in-addr.arpa'
+		if DNS.DnsRequest(b, qtype = 'ptr').req().header['status'] == "NOERROR":
+			ptr=DNS.DnsRequest(b, qtype = 'ptr').req().answers[0]['data']
+	except IndexError:
+## Sometimes no PTR on IP = "list index out of range"
+		ptr = None
+		pass
+	except:
+## Reason for exception is usually timeout, ignore
+		debug("DNS query problems. %s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR)
+		debug("* reversedns(\"%s\")" % (ip), LOG_ERR, id=id)
+		pass
+
+	debug("\tPTR reply: %s" % (ptr), LOG_DEBUG, id=id)
+	return ptr
+
 ##############################################################################
 ### Basic fileoperations (Usualy we don't need to care if it success or not)
 # Checked 19.2.2017, - Semi
@@ -682,44 +749,107 @@ class SpamMilter(Milter.Milter):
 		return
 
 	def _cleanup(self):
+		if conf["main"]["timeme"]: timer = timeme()
 		debug("SpamMilter._cleanup()", LOG_DEBUG, id=self.id)
 		if self.tmp:
 			self.tmp.close()
 			rm(self.tmp.name, id=self.id)
 		if not self.mail:
 			return
+		if conf["main"]["timeme"]: self.mail["timer"]["SpamMilter_"+sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 		return
+
 	def abort(self):
 		debug("SpamMilter.abort()", LOG_DEBUG, id=self.id)
 		self._cleanup()
 		return CONTINUE
+
 	def close(self):
 		debug("SpamMilter.close()", LOG_DEBUG, id=self.id)
 		self._cleanup()
 		return CONTINUE
+
 	def connect(self,host,family,hostaddr):
+		if conf["main"]["timeme"]: timer = timeme()
 		debug("SpamMilter.connect(%s, %s)" % (host,hostaddr), LOG_DEBUG, id=self.id)
+# Crashes if IPV6 / SEMI
+# I have no active IPv6, so we need to think how we can replicate and fix
+# this.
+		self.mail["received"][1]["ip"] = hostaddr[0]
+		if usedns:
+			self.mail["received"][1]["dns"] = reversedns(hostaddr[0], id=self.id)
+
+		if conf["main"]["timeme"]: self.mail["timer"]["smtp_"+sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 		return CONTINUE
+
 	def hello(self,host):
+		if conf["main"]["timeme"]: timer = timeme()
 		debug("SpamMilter.hello(%s)" % (host), LOG_DEBUG, id=self.id)
+
+		self.mail["received"][1]["helo"] = host
+# 2DO		self.reuse = self.mail["received"][1]
+		if conf["main"]["timeme"]: self.mail["timer"]["smtp_"+sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 		return CONTINUE
+
 	def envfrom(self,mailfrom,*vars):
+		if conf["main"]["timeme"]: timer = timeme()
 		debug("SpamMilter.envfrom(\"%s\", %s)" % (mailfrom,vars), LOG_DEBUG, id=self.id)
+
+### TODO ###
+		if not self.mail:
+		# This could be triggered after eom, and self.mail COULD be set.. need to rethink.
+		#	self._cleanup()
+			debug("Connection reused", LOG_DEBUG, id=self.id)
+		#	self.__init__()
+		#	self.mail["received"][1] = self.reuse
+		#	self.mail["smtpcmds"].append("reused")
+
+		debug("mail from:%s" % (mailfrom), LOG_INFO, id=self.id)
+		if mailfrom in ["<>", "", None]:
+			if self.mail["received"][1].has_key("dns"):
+				mailfrom = "<MAILER-DAEMON@%s>" % (self.mail["received"][1]["dns"])
+			else:
+				mailfrom = "<MAILER-DAEMON@[%s]>" % (self.mail["received"][1]["ip"])
+		self.mail["from"] = parse_addrs(mailfrom, id=self.id)
+
+### TODO ###
+		#if not conf["runtime"]["offline"]:
+		#	self.mail["my"]["ip"] = self.getsymval('{if_addr}')
+		#	self.mail["my"]["dns"] = self.getsymval('{if_name}')
+		#	if self.getsymval('{auth_type}'):
+		#		self.mail["smtp_auth"] = self.getsymval('{auth_authen}')
+
+		if conf["main"]["timeme"]: self.mail["timer"]["smtp_"+sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 		return CONTINUE
+
 	def envrcpt(self,rcpt,*vars):
+		if conf["main"]["timeme"]: timer = timeme()
 		debug("SpamMilter.envrcpt(\"%s\")" % (rcpt), LOG_DEBUG, id=self.id)
+		if conf["main"]["timeme"]: self.mail["timer"]["smtp_"+sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 		return CONTINUE
+
 	def header(self,field,value):
+		if not self.mail["timer"].has_key("smtp_header") and conf["main"]["timeme"]: self.mail["timer"]["smtp_header"] = timeme()
 		debug("SpamMilter.header(%s, %s)" % (field,value), LOG_DEBUG, id=self.id)
 		return CONTINUE
+
 	def eoh(self):
 		debug("SpamMilter.eoh()", LOG_DEBUG, id=self.id)
+		if conf["main"]["timeme"] and self.mail["timer"].has_key("smtp_header"):
+			self.mail["timer"]["smtp_headers"] = str("%.4f") % timeme(self.mail["timer"]["smtp_header"])
+			del self.mail["timer"]["smtp_header"]
 		return CONTINUE
+
 	def body(self,chunk):
+		if conf["main"]["timeme"]: timer = timeme()
 		debug("SpamMilter.body() (chunk size: %d)" % len(chunk), LOG_DEBUG, id=self.id)
+		if conf["main"]["timeme"]: self.mail["timer"]["smtp_"+sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 		return CONTINUE
+
 	def eom(self):
+		if conf["main"]["timeme"]: timer = timeme()
 		debug("SpamMilter.eom()", LOG_DEBUG, id=self.id)
+		if conf["main"]["timeme"]: self.mail["timer"]["smtp_"+sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 		return CONTINUE
 
 ##############################################################################
@@ -773,17 +903,21 @@ class test:
 		# Use data from variables, and simulate SMTP-connection.
 		if not self.mail["received"][1].has_key("dns"):
 			self.mail["received"][1]["dns"] = "[%s]" % self.mail["received"][1]["ip"]
+# Connect
 		m.connect(self.mail["received"][1]["dns"],None,[self.mail["received"][1]["ip"]])
 		if self.mail["received"][1].has_key("helo"):
+# Helo
 			m.hello(self.mail["received"][1]["helo"])
 		else:
 			m.hello(self.mail["received"][1]["dns"])
 		if type(self.mail["from"]) is list:
+# Mail From
 			m.envfrom("<%s>" % self.mail["from"][0])
 		else:
 			m.envfrom("<%s>" % self.mail["from"])
 		if type(self.mail["to"]) is list:
 			for r in self.mail["to"]:
+# Rcpt to
 				m.envrcpt("<%s>" % r)
 		else:
 			m.envrcpt("<%s>" % self.mail["to"])
@@ -800,19 +934,30 @@ class test:
 			elif oline == "":
 				oline=line
 			else:
+# Headers
 				m.header(oline[0:oline.find(":")],oline[oline.find(":")+2:-1])
 				oline=line
 			if len(line) < 2: break
 		m.eoh()
 		# Feed maximum of 2MB of message to milter, should we increase this?
 		if self.tmp:
+# Data
 			m.body(self.tmp.read(1024*1024*2))
 		# Now we have done everything as in 'online'
+# .
 		m.eom()
+# Close
 		m.close()
 		if self.tmp:
 			self.tmp.close()
 			rm(self.tmp.name)
+
+# Configuration file
+#		print show_vars(conf)
+# "Client" data, this is message to be filtered (should be used as 'read-only')
+#		print show_vars(self.mail)
+# Our data, after all hard work
+		print show_vars(m.mail)
 
 # OBSOLETE
 #	def run(self):

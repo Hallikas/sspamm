@@ -260,6 +260,27 @@ class MyParser(ConfigParser.ConfigParser):
 
 ##############################################################################
 ### Configuration
+def maildef():
+	return {
+		"id": 0,
+		"tmpfile": None,
+		"from": [],
+		"to": [],
+		"header": {
+			"Received": [ ],
+		},
+		"received": {
+			1: {
+				"ip": None,
+				"dns": None,
+				"helo": None,
+			}
+		},
+		"rawsubject": None,
+		"raw": '',
+	}
+
+
 # Checked 22.2.2017, - Semi
 def load_config(file):
 	global conf
@@ -351,7 +372,8 @@ def load_config(file):
 ##		t = re.sub("$", "$", re.sub("\*", ".*", re.sub("\?", ".", re.sub("\.", "\.", t))))
 				elif o in ["accept", "block", "ipfromto"]:
 					if o == "accept":
-						print show_vars(conf[s][o])
+#						print show_vars(conf[s][o])
+						pass
 				elif o in ["subject", "blockwords", "blockhtml"]:
 					pass
 				elif o in ["hide"]:
@@ -423,41 +445,54 @@ def load_vars(fname, id=None):
 	is_raw = False
 	raw = None
 	do_skip = False
+	line_cont = False
+	do_show = False
+	name = None
 	buf = ""
-# Todo: This fails if variable has empty linefeeds. Like matches \n\n\n\n and saves it as variable. This need to reworked.
+
 	while 1:
 		line = fp.readline()
-		if len(line) < 1: break
-		if line[1:10] == "\"mime\": {":
+		if line == "}" or len(line) < 1:
+			buf += line
+			break
+		if len(line) > 1 and line[1] == "\"":
+			name = line[2:line.rfind("\"")]
+			do_skip = False
+		elif do_skip and line[1:3] == "},":
+			do_skip = False
+			continue
+
+		if do_skip or name in ["mime", "result", "smtpcmds", "tests", "note", "rules", "charset", "checksum", "timer", "todomain", "ipfromto", "action", "size", "type", "my"]:
 			do_skip = True
-		if line[1:13] == "\"raw\": 'From":
+			continue
+		elif name in ["raw"] and is_raw == False:
+			is_raw = True
 			raw = line[9:]
-			is_raw = True
-		elif line[-5:] == "\": '\n":
-			rname=line[3:-5]
-			raw = ""
-			is_raw = True
-		elif is_raw:
-# Not 'real' but more safer
-			if line == "\n": line = "\\\\n"
-# Not so safe version
-#			if line == "\n": line = "\\n"
-			if line == "',\n":
+			continue
+		if is_raw:
+			if line[-3:] == "',\n":
+				line = line[:-3]
 				is_raw = False
-				buf += "\t\"%s\": '%s'," % (rname, raw)
-				raw = ""
+			raw += line
+			continue
+
+#
+# Note: line_cont is used to detect 'multiline' values from .var file. This
+# WILL get broken if line does end with , but quotes are not closed!  This
+# is known bug, and we will address it later.
+#
+		if not do_skip:
+			if line[-2:] not in [",\n", "{\n", "(\n", "[\n"]:
+				line_cont = True
 			else:
-				raw += line
-		elif do_skip:
-			if line[1:3] == "},":
-				do_skip = False
-			pass
-		else:
+				line_cont = False
+			if line_cont:
+				line = line[:-1]+"\\n"
+				pass
 			buf += line
 	fp.close()
 	vars = eval(buf)
 	if raw: vars["raw"] = raw
-
 	return vars
 
 # Note: This should be confirmed by someone else
@@ -630,8 +665,29 @@ class SpamMilter(Milter.Milter):
 	def __init__(self):
 		self.id = Milter.uniqueID()
 		debug("SpamMilter.__init__()", LOG_DEBUG, id=self.id)
+		self.mail = maildef()
+		self.mail["id"] = self.id
+
+		try:
+			self.tmpname = "%08d.tmp" % (self.id)
+## Temp file in DISK
+			if not os.path.exists(conf["main"]["tmpdir"]): mkdir(conf["main"]["tmpdir"])
+			self.mail["tmpfile"] = conf["main"]["tmpdir"]+"/"+self.tmpname
+			self.tmp = open(self.mail["tmpfile"],"w+b")
+			debug("tmpfile: %s" % (self.mail["tmpfile"]), LOG_DEBUG, id=self.id)
+		except IOError, (errno, strerror):
+			debug("Temp file failure (%s: %s)" % (errno, strerror), LOG_DEBUG, id=self.id)
+		except:
+			debug("Temp file (%s) failure" % "%s/%s" % (conf["main"]["tmpdir"], self.tmpname), LOG_DEBUG, id=self.id)
+		return
+
 	def _cleanup(self):
 		debug("SpamMilter._cleanup()", LOG_DEBUG, id=self.id)
+		if self.tmp:
+			self.tmp.close()
+			rm(self.tmp.name, id=self.id)
+		if not self.mail:
+			return
 		return
 	def abort(self):
 		debug("SpamMilter.abort()", LOG_DEBUG, id=self.id)
@@ -639,6 +695,7 @@ class SpamMilter(Milter.Milter):
 		return CONTINUE
 	def close(self):
 		debug("SpamMilter.close()", LOG_DEBUG, id=self.id)
+		self._cleanup()
 		return CONTINUE
 	def connect(self,host,family,hostaddr):
 		debug("SpamMilter.connect(%s, %s)" % (host,hostaddr), LOG_DEBUG, id=self.id)
@@ -665,6 +722,102 @@ class SpamMilter(Milter.Milter):
 		debug("SpamMilter.eom()", LOG_DEBUG, id=self.id)
 		return CONTINUE
 
+##############################################################################
+###
+### Class for "manual" testing
+###
+class test:
+	def __init__(self, file, verbose = None):
+		if file.find(".") > 0:
+			file=file[0:file.rfind(".")]
+		if not os.path.exists(file):
+			if os.path.exists("%s.var" % file):
+				file = "%s.var" % file
+			else:
+				print "File %s not found!" % file
+				sys.exit(2)
+
+		# Load Configuration
+		conf["runtime"]["offline"] = True
+		Tconfig()
+		# Setup our debugging
+		conf["main"]["savedir"] = None
+		conf["main"]["tmpdir"] = "."
+
+		# Load mail from file with variables
+		self.mail = maildef()
+		self.mail = load_vars(file)
+
+		# Open temp file and write raw message into it
+
+## What should we do, if file does not have 'raw' entry? Is that possible?
+		if self.mail.has_key("raw") and self.mail["raw"]:
+			self.tmp = open("%s.tmp" % (file), "w+b")
+			self.tmp.write(self.mail["raw"])
+			self.tmp.close()
+
+			# Reopen tmp file as read-only and move to end
+			# Now we should have system like when online
+			self.tmp = open("%s.tmp" % (file), "r")
+			#self.tmp.seek(0,2)	# Seek to end-of-file
+			self.tmp.seek(0)	# Seek to begining-of-file
+
+	def feed2milter(self):
+		print "feed2milter"
+		m = SpamMilter()
+
+		m.mail["id"] = self.mail["id"]
+		m.id = m.mail["id"]
+		m.mail["tmpfile"] = "%08d.tmp" % (m.id)
+
+		# Use data from variables, and simulate SMTP-connection.
+		if not self.mail["received"][1].has_key("dns"):
+			self.mail["received"][1]["dns"] = "[%s]" % self.mail["received"][1]["ip"]
+		m.connect(self.mail["received"][1]["dns"],None,[self.mail["received"][1]["ip"]])
+		if self.mail["received"][1].has_key("helo"):
+			m.hello(self.mail["received"][1]["helo"])
+		else:
+			m.hello(self.mail["received"][1]["dns"])
+		if type(self.mail["from"]) is list:
+			m.envfrom("<%s>" % self.mail["from"][0])
+		else:
+			m.envfrom("<%s>" % self.mail["from"])
+		if type(self.mail["to"]) is list:
+			for r in self.mail["to"]:
+				m.envrcpt("<%s>" % r)
+		else:
+			m.envrcpt("<%s>" % self.mail["to"])
+		self.tmp.seek(0)
+		oline=""
+		while 1:
+			line=self.tmp.readline()
+			if line[0:5] == "From ": continue
+
+			if line[0] == "\t" or line[0] == " ":
+				oline = oline+line
+				tabbed=True
+				continue
+			elif oline == "":
+				oline=line
+			else:
+				m.header(oline[0:oline.find(":")],oline[oline.find(":")+2:-1])
+				oline=line
+			if len(line) < 2: break
+		m.eoh()
+		# Feed maximum of 2MB of message to milter, should we increase this?
+		if self.tmp:
+			m.body(self.tmp.read(1024*1024*2))
+		# Now we have done everything as in 'online'
+		m.eom()
+		m.close()
+		if self.tmp:
+			self.tmp.close()
+			rm(self.tmp.name)
+
+# OBSOLETE
+#	def run(self):
+#		self.feed2milter()
+#		sys.exit(0)
 
 ##############################################################################
 ###
@@ -821,6 +974,8 @@ if __name__ == "__main__":
 		Tconfig()
 		print show_vars(conf)
 		sys.exit(0)
+	elif os.path.exists(sys.argv[1:][0]):
+		test(sys.argv[1:][0]).feed2milter()
 	else:
 		print """We need help here?"""
 		sys.exit(1)

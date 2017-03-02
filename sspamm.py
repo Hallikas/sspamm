@@ -277,9 +277,7 @@ def maildef():
 		"tmpfile": None,
 		"from": [],
 		"to": [],
-		"header": {
-			"Received": [],
-		},
+		"header": {},
 		"received": {
 			1: {
 				"ip": None,
@@ -587,6 +585,36 @@ def parse_addrs(addr, id=None):
 	else:
 		return [addr]
 
+### Is private, test if IP or HOSTNAME is local/private
+def isprivate(a, id=None):
+	debug("isprivate(\"%s\")" % (a), LOG_DEBUG, id=id)
+	try:
+		b = re.search("^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", a)
+		if b:
+			# Is IP
+			# List collected from https://en.wikipedia.org/wiki/Reserved_IP_addresses
+			if re.search("^127\.", a): return True
+			if re.search("^10\.", a): return True
+			if re.search("^100\.(6[4-9]|([7-9]|1[01])[0-9]|12[0-7])\.", a): return True
+			if re.search("^169\.254\.", a): return True
+			if re.search("^172\.(1[6-9]|2[0-9]|3[01])\.", a): return True
+			if re.search("^192\.0\.0\.", a): return True
+			if re.search("^192\.0\.2\.", a): return True
+			if re.search("^192\.88\.99\.", a): return True
+			if re.search("^192\.168\.", a): return True
+			if re.search("^198\.1[89]\.", a): return True
+			if re.search("^198\.51\.100\.", a): return True
+			if re.search("^203\.0\.113\.", a): return True
+			if re.search("^2(2[4-9]|3[0-9])\.", a): return True
+			if re.search("^^2(4[0-9]|5[0-5])\.", a): return True
+		else:
+			# is Name
+			if a in ["localhost"]: return True
+	except:
+		debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR)
+
+	return False
+
 ### Reverse DNS query (IP -> PTR)
 def reversedns(ip, id=None):
 	global usedns
@@ -595,12 +623,12 @@ def reversedns(ip, id=None):
 	if not usedns:
 		debug("NO DNS Module loaded", LOG_INFO, id=mail["id"])
 		return None
-	a = ip.split('.')
-
-	if a[0] == "127" or a[0] == "10" or (a[0] == "192" and a[1] == "168") or (a[0] == "169" and a[1] == "254") or (a[0] == "172" and a[1] == "16") or (a[0] == "172" and a[1] == "17"):
+	if isprivate(ip):
 		debug("* reversedns(\"%s\") = Private network" % (ip), LOG_DEBUG, id=id)
 		return None
 
+	a = ip.split('.')
+	if len(a) != 4: return None
 	try:
 		ptr = None
 		if DNS.defaults['server'] == []: DNS.DiscoverNameServers()
@@ -620,6 +648,9 @@ def reversedns(ip, id=None):
 
 	debug("\tPTR reply: %s" % (ptr), LOG_DEBUG, id=id)
 	return ptr
+
+def oneliner(value, id=None):
+	return re.sub(" + ", " ", re.sub("[\r\n\t]", " ", value))
 
 ##############################################################################
 ### Basic fileoperations (Usualy we don't need to care if it success or not)
@@ -825,16 +856,88 @@ class SpamMilter(Milter.Milter):
 	def envrcpt(self,rcpt,*vars):
 		if conf["main"]["timeme"]: timer = timeme()
 		debug("SpamMilter.envrcpt(\"%s\")" % (rcpt), LOG_DEBUG, id=self.id)
+
+		if len(self.mail["to"]) > 0 and rcpt not in self.mail["to"]:
+			self.mail["to"].append(parse_addrs(rcpt, id=self.id)[0])
+		else:
+			self.mail["to"] = parse_addrs(rcpt, id=self.id)
+
 		if conf["main"]["timeme"]: self.mail["timer"]["smtp_"+sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 		return CONTINUE
 
 	def header(self,field,value):
 		if not self.mail["timer"].has_key("smtp_header") and conf["main"]["timeme"]: self.mail["timer"]["smtp_header"] = timeme()
 		debug("SpamMilter.header(%s, %s)" % (field,value), LOG_DEBUG, id=self.id)
+
+		lfield = field.lower() # Lower case field name
+### Headers to drop ... just proof-of-concept
+		if lfield in [ "x-spambayes-classification", "x-spam-level", "mime-version"]:
+			return CONTINUE
+
+		if len(self.mail["header"]) == 0:
+			self.mail["size"] = 0
+			self.mail["subject"] = ""
+			if self.tmp:
+				self.tmp.write("From %s %s\n" % (self.mail["from"][0], time.ctime()))
+		elif self.tmp:
+			self.tmp.write("%s: %s\n" % (field, value))
+
+### Note, this is NOT endless loop, it is just used like switch-case
+### statement.  We break out when perferred line has been processed.
+### Save header line as is, before prosessing.
+### This is just lazy way to do "elif"
+		while 1:
+			oneline_value = oneliner(value, id=self.id).strip()
+
+			if self.mail["header"].has_key(field) and lfield not in [ "subject", "received" ]:
+				if type(self.mail["header"][field]) is not list:
+					tmp = self.mail["header"][field]
+					del self.mail["header"][field]
+					self.mail["header"][field] = [ tmp ]
+				self.mail["header"][field].append(oneline_value)
+			elif lfield not in [ "received" ]:
+				self.mail["header"][field] = oneline_value
+
+			if lfield == "subject":
+				self.mail["subject"] = value
+			# /subject
+				break
+
+			if lfield == "received":
+				recstr="(from (?P<helo>\S+) \((((?P<dns>\S+) )?\[((?P<ip>[\d\.]+)|ipv6:(?P<ipv6>[\w\d:]+))\]|[\w\d, ]+)\) )?by (?P<by>\S+)( \([\S ]+\))?( with (?P<proto>\S+))?( id (?P<id>\S+))?( for <(?P<for>\S+)>)?( \([\S ]+\))?; (?P<date>.+)"
+				a = re.compile(recstr).match(oneline_value.lower())
+
+				if not a:
+					debug("Can't parse received: %s" % (oneline_value.lower()), LOG_NOTICE, id=self.id)
+					break
+				b={k: v for k, v in a.groupdict().items() if v}
+
+				# Do not add received line if host is localhost or inside (any) private network
+				# We have no need to follow internal relaying?
+				if (b.has_key("ip") and isprivate(b["ip"])) or (b.has_key("dns") and isprivate(b["dns"])): break
+
+				# Populate mail data with received host information
+				reclen = len(self.mail["received"])
+				if (b.has_key("by") and self.mail["received"][reclen].has_key("by")) and b["by"] == self.mail["received"][reclen]["by"]:
+					break
+				self.mail["received"][reclen+1]=b
+
+			# /received
+				break
+# NOTE! Don't remove this last break, without this we are in infinite loop :)
+		# /while 1
+			break
 		return CONTINUE
 
 	def eoh(self):
 		debug("SpamMilter.eoh()", LOG_DEBUG, id=self.id)
+## Received fix was here. Also it would be safe to do accept, block, ipfromto, dyndns, rbl, headers test here.
+
+# Do PTR DNS requests
+		for val in self.mail["received"]:
+			if self.mail["received"][val].has_key("ip") and not self.mail["received"][val].has_key("dns"):
+				self.mail["received"][val]["dns"] = reversedns(self.mail["received"][val]["ip"], id=self.id),
+
 		if conf["main"]["timeme"] and self.mail["timer"].has_key("smtp_header"):
 			self.mail["timer"]["smtp_headers"] = str("%.4f") % timeme(self.mail["timer"]["smtp_header"])
 			del self.mail["timer"]["smtp_header"]
@@ -893,7 +996,6 @@ class test:
 			self.tmp.seek(0)	# Seek to begining-of-file
 
 	def feed2milter(self):
-		print "feed2milter"
 		m = SpamMilter()
 
 		m.mail["id"] = self.mail["id"]
@@ -1035,7 +1137,7 @@ def Tconfig(childname=None, doverbose=None):
 ##############################################################################
 ### Main Functions
 def debug(args, level=LOG_DEBUG, id=None, trace=None, verb=None):
-	print "%2d\t%s" % (level, args)
+# 2do	print "%2d\t%s" % (level, args)
 	sys.stdout.flush()
 	return
 

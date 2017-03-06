@@ -5,11 +5,14 @@
 
 """Semi's SPAM Milter
 """
+__program__ = "Semi's Spam Milter"
+__prog__ = "sspamm"
 __author__ = "Sami-Pekka Hallikas <semi@hallikas.com>"
 __email__ = "semi@hallikas.com"
 __date__ = "19 Feb 2017"
 __version__ = "4.0-devel"
 
+import argparse
 import sys
 import os
 import locale
@@ -1217,6 +1220,40 @@ def test_rbl(mail):
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 	return (None, mail)
 
+def test_accept(mail):
+	if conf["main"]["timeme"]: timer = timeme()
+	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+
+	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
+	return (None, mail)
+
+def test_block(mail):
+	if conf["main"]["timeme"]: timer = timeme()
+	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+
+	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
+	return (None, mail)
+
+def test_samefromto(mail):
+	if conf["main"]["timeme"]: timer = timeme()
+	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+
+	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
+	return (None, mail)
+
+def test_ipfromto(mail):
+	if conf["main"]["timeme"]: timer = timeme()
+	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+
+	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
+	return (None, mail)
+
+def test_crc(mail):
+	if conf["main"]["timeme"]: timer = timeme()
+	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+
+	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
+	return (None, mail)
 
 ##############################################################################
 ###
@@ -1317,26 +1354,31 @@ class test:
 			self.tmp.close()
 			rm(self.tmp.name)
 
-# Configuration file
-#		print show_vars(conf)
-# "Client" data, this is message to be filtered (should be used as 'read-only')
-#		print show_vars(self.mail)
-# Our data, after all hard work
-## 2do		print show_vars(m.mail)
-
-# OBSOLETE
-#	def run(self):
-#		self.feed2milter()
-#		sys.exit(0)
+		if conf["runtime"]["args"]["showmail"]:
+			print "m.mail:",
+			print show_vars(m.mail)
+# "Client" data, this is message to be filtered (should be considered as 'read-only')
+#			tmp = self.mail
+#			del tmp["raw"]
+#			print "self.mail:",
+#			print show_vars(tmp)
+		return
 
 ##############################################################################
 ###
 ### CHILD THREADS
 ###
-def Tconfig(childname=None, doverbose=None):
+def Tconfig(childname=None, silent=None):
 	global conf, conffile
 
-	debug("Tconfig(%s, %s)" % (childname, doverbose), LOG_DEBUG)
+	debug("Tconfig(childname=%s)" % (childname), LOG_DEBUG)
+
+	if conf["runtime"]["args"]["conf"]:
+		conf["runtime"]["conffile"] = conf["runtime"]["args"]["conf"][0]
+		if not os.access(conf["runtime"]["conffile"], os.R_OK):
+			debug("FATAL: Can't access %s." % (conf["runtime"]["conffile"]), LOG_CRIT)
+			sys.exit(2)
+
 	if conf["runtime"]["conffile"] == None:
 		files = [ ]
 # Build array of possible configuration locations
@@ -1368,16 +1410,13 @@ def Tconfig(childname=None, doverbose=None):
 			time.sleep(60)
 			continue
 		if conf["runtime"]["conftime"] < os.stat(conf["runtime"]["conffile"])[8]:
-			debug("Config file %s found." % conf["runtime"]["conffile"], LOG_NOTICE)
+			debug("Config file %s found." % conf["runtime"]["conffile"], LOG_INFO)
 			if conf["runtime"]["conftime"] > 0:
 				save_config(conf["runtime"]["conffile"])
 			conf["runtime"]["conftime"] = os.stat(conf["runtime"]["conffile"])[8]
 			conf["runtime"]["confpath"] = conf["runtime"]["conffile"][0:conf["runtime"]["conffile"].rfind("/")]
-			if childname: debug("Configuration %s reloaded" % (conf["runtime"]["conffile"]), LOG_NOTICE)
+			if childname: debug("Configuration %s reloaded" % (conf["runtime"]["conffile"]), LOG_INFO)
 			load_config(conf["runtime"]["conffile"])
-#			if conf["runtime"]["offline"]:
-#				if doverbose: conf["main"]["offline"] = doverbose
-#				conf["main"]["verbose"] = conf["main"]["offline"]
 
 			if not conf["runtime"]["offline"] and conf["main"]["savedir"]:
 				try: mkdir(conf["main"]["savedir"])
@@ -1400,7 +1439,10 @@ def Tconfig(childname=None, doverbose=None):
 ##############################################################################
 ### Main Functions
 def debug(args=None, level=LOG_DEBUG, id=None, trace=None, verb=None):
-	show = LOG_DEBUG
+	show = conf["runtime"]["args"]["debug"]
+	if conf["runtime"]["args"]["v"]:
+		show += conf["runtime"]["args"]["v"]
+	
 	if(level > show): return
 	try:
 		if(trace): debug("Trace path: %s" % (show_framepath()), level)
@@ -1409,7 +1451,6 @@ def debug(args=None, level=LOG_DEBUG, id=None, trace=None, verb=None):
 			del locals["self"]
 			debug("\tLocals for %s: %s" % (sys._getframe().f_back.f_code.co_name, locals), LOG_DEBUG, id=id)
 #			print "\tGlobals:",show_vars(sys._getframe().f_back.f_globals)
-
 	except:
 		pass
 	if args:
@@ -1488,6 +1529,21 @@ def cleanquit(arg1 = None, arg2 = None):
 	os._exit(0)
 
 if __name__ == "__main__":
+# ./sspamm.py -c sspamm.conf sample_spam.var -d
+# Namespace(conf=['sspamm.conf'], debug=7, pid=False, v=None, varfile='sample_spam.var')
+
+	conf["runtime"]["starttime"] = "%.0f" % time.time()
+	parser = argparse.ArgumentParser(description='Semi\'s Spam Milter.')
+	parser.add_argument('--ver', '-V', help='show version', action='version', version='%s v%s' % (__prog__, __version__))
+	parser.add_argument('--conf', '-c', help='configuration file location', action='store', nargs=1)
+	parser.add_argument('--showpid', '-sp', help='show location of pid file', action='store_true', dest='showpid')
+	parser.add_argument('--showconf', '-sc', help='show configuration dump', action='store_true', dest='showconf')
+	parser.add_argument('--showmail', '-sm', help='dump debug data after mail processing', action='store_true', dest='showmail')
+	parser.add_argument('-v', help='increase verbosity', action='count')
+	parser.add_argument('--debug', '-d', help='debug level', action='store', nargs='?', const='7', type=int)
+	parser.add_argument('varfile', metavar='spamfile.var', help='.var file to load (for testing)', nargs='?', type=str)
+	conf["runtime"]["args"]=vars(parser.parse_args())
+
 	try:
 		conf["runtime"]["hostname"] = gethostname()[0:gethostname().index('.')]
 	except:
@@ -1497,26 +1553,32 @@ if __name__ == "__main__":
 	conf["runtime"]["bindir"] = sys.argv[0][0:sys.argv[0].rfind("/")]
 	if not os.path.exists(conf["runtime"]["bindir"]):
 		conf["runtime"]["bindir"] = os.getcwd()
-	conf["runtime"]["starttime"] = "%.0f" % time.time()
 
-	locale.setlocale(locale.LC_CTYPE, 'en_US.UTF-8')
+	try:
+		locale.setlocale(locale.LC_CTYPE, 'en_US.UTF-8')
+		os.nice(5)
+	except:
+		pass
 
-	os.nice(5)
-	if not sys.argv[1:]:
-		main()
-	elif sys.argv[1:][0] == "pid":
-		Tconfig()
-		print conf["main"]["pid"]
+	a=conf["runtime"]["args"]
+	if not conf["runtime"]["args"]["debug"]: conf["runtime"]["args"]["debug"] = LOG_NOTICE
+	Tconfig(silent=True)
+
+	if a["showpid"]:
+ 		print conf["main"]["pid"]
 		sys.exit(0)
-	elif sys.argv[1:][0] == "conf":
-		Tconfig()
+	if a["showconf"]:
 		print show_vars(conf)
 		sys.exit(0)
-	elif os.path.exists(sys.argv[1:][0]):
-		test(sys.argv[1:][0]).feed2milter()
+
+	if a["varfile"]:
+		if not os.path.exists(a["varfile"]):
+			print "File %s not found." % (a["varfile"])
+			sys.exit(1)
+		test(a["varfile"]).feed2milter()
+		sys.exit(0)
 	else:
-# Our filename is sys._getframe().f_code.co_filename
-		print """We need help here?"""
-		sys.exit(1)
+		print "MAIN"
+#		main()
 
 sys.exit(0)

@@ -286,6 +286,7 @@ def maildef():
 		"rawsubject": None,
 		"raw": '',
 		"timer": {},
+		"result": {},
 	}
 
 
@@ -372,12 +373,6 @@ def load_config(file):
 			if s in ["rules"]:
 				if 0:
 					pass
-# Just reminder how to do stuff... We need to work this part.
-##		testconf = []
-##		for t in conf[s]: if dumbregtest(t): testconf.append(t)
-##		conf[s][o] = testconf
-##		t = re.sub("^", "^", re.sub("\?", ".", re.sub("\.", "\.", t)))
-##		t = re.sub("$", "$", re.sub("\*", ".*", re.sub("\?", ".", re.sub("\.", "\.", t))))
 				elif o in ["accept", "block", "ipfromto"]:
 					if o == "accept":
 #						print show_vars(conf[s][o])
@@ -688,48 +683,6 @@ def is_listed(needle,heystack,flags=re.IGNORECASE+re.MULTILINE,id=None,noshow=No
 				return tmp.group()
 	return None
 
-#	for i in needle:
-#		print i
-#	if type(what) is dict:
-#		If what is dict, look match for keys from where.
-#		for a in what:
-#			tmp = is_listed(a,where,flags=flags,id=id,noshow=noshow)
-#			if tmp: return what[a]
-#	elif type(what[0]) is tuple:
-#		print "what is tuple"
-#		for a in what:
-#			tmp = is_listed(a[0],where,flags=flags,id=id,noshow=noshow)
-#			if tmp: return a[1]
-#	else:
-#		print "else"
-#		if not noshow: debug("\t -> is_listed()" % (where), LOG_DEBUG, id=id)
-#		for haystack in where:
-#			if not noshow: debug("\twhere = %s" % haystack, LOG_DEBUG, id=id)
-#                       n=0
-#			for needle in what:
-#				if not noshow: debug("\t\t%s" % (needle), LOG_DEBUG, id=id)
-#				if id and globaltmp and globaltmp.has_key(id): globaltmp[id] += 1
-#				try:
-#					n += 1
-#					tmp = re.search("%s" % (needle), haystack, flags)
-#				except:
-#					debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR)
-#					debug("FAILED: is_listed(%s, %s)" % (haystack, needle), LOG_ERR, id=id)
-#					pass
-#				if tmp:
-#					if not noshow: debug("\t\t*is_listed - Matched", LOG_DEBUG, id=id)
-#					if not noshow: debug("\t\t\tFrom: %s" % (haystack), LOG_DEBUG, id=id)
-#					if not noshow: debug("\t\t\tRegexp Rule %d: %s" % (n, needle), LOG_DEBUG, id=id)
-#					if not noshow: debug("\t\t\tMatch as: %s" % tmp.group(), LOG_DEBUG, id=id)
-#					tmpmatch = tmp.group()
-### Should not be used, because it splits also (earth|moon) tests to two
-### different tests, which raises error.
-##				if not norecursive: is_listed(needle.split('|'),tmp.group(),noshow=True,norecursive=True)
-#					tmp = re.search("^\(\?#.*?\)", needle)
-#					if tmp: return (tmp.group()[3:-1], tmpmatch)
-#					return (True, tmpmatch)
-#	return None
-
 ##############################################################################
 ### Basic fileoperations (Usualy we don't need to care if it success or not)
 # Checked 19.2.2017, - Semi
@@ -913,7 +866,7 @@ class SpamMilter(Milter.Milter):
 		#	self.mail["received"][1] = self.reuse
 		#	self.mail["smtpcmds"].append("reused")
 
-		debug("mail from:%s" % (mailfrom), LOG_INFO, id=self.id)
+		debug("mail from:%s" % (mailfrom), LOG_DEBUG, id=self.id)
 		if mailfrom in ["<>", "", None]:
 			if self.mail["received"][1].has_key("dns"):
 				mailfrom = "<MAILER-DAEMON@%s>" % (self.mail["received"][1]["dns"])
@@ -1058,29 +1011,6 @@ class SpamMilter(Milter.Milter):
 		debug("SpamMilter.eom()", LOG_DEBUG, id=self.id)
 		if conf["main"]["timeme"]: self.mail["timer"]["smtp_"+sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 
-### Sample code how filter can 'answer' mail messages
-#		if self.mail["to"][0][0:11] == "spamfilter@":
-#			debug("Test request from %s" % self.mail["from"][0], LOG_INFO, id=self.id)
-#			if not conf["runtime"]["offline"]:
-#				self.delrcpt(self.mail["to"][0])
-#				self.addrcpt(self.mail["from"][0])
-#				self.chgheader("MIME-Version", 1, "")
-#				self.chgheader("Reply-To", 0, "")
-#				self.chgheader("From", 0, "Spam Filter <abuse@%s>" % (self.mail["my"]["dns"]))
-#				self.chgheader("Content-Type", 1, "text/plain")
-#				self.chgheader("Subject", 1, "Test message from %s" % (self.mail["from"][0]))
-#				self.replacebody("""
-#
-#Your test message was received
-#
-#""")
-#				return Milter.ACCEPT
-#
-### Authenticated sender, accept without logging
-#		if self.mail.has_key("smtp_auth"):
-#			debug("\tskip, authenticated", LOG_DEBUG, id=self.id)
-#			return Milter.ACCEPT
-
 ### What if Domain (not) found from filtered list
 		tests = None
 		rules = None
@@ -1111,7 +1041,9 @@ class SpamMilter(Milter.Milter):
 		self.mail["subject"] == "(none)"
 
 		debug("\tTests: %s" % (tests), LOG_DEBUG, id=self.id)
+		self.mail["tests"] = tests
 		debug("\tRules: %s" % (rules), LOG_DEBUG, id=self.id)
+		self.mail["rules"] = rules
 
 		subchar = []
 		try:
@@ -1146,155 +1078,39 @@ class SpamMilter(Milter.Milter):
 ###
 ### Now message is received and processed. Fun part begins now, testing.
 ###
-#		self.mail["result"] = {}
-#		self.mail["action"] = [ "pass" ]
-#		flags = []
-#		for test in tests:
-#			if test in ['disable']: continue
-#			try:
-#				(ret, self.mail) = eval("test_"+test)(self.mail)
-#				self.mail["result"][test] = ret
-#
-#				if ret:
-#					debug("do test_%s = %s ..." % (test, ret[0]), LOG_DEBUG, id=self.id)
-#				if ret and ret[0].lower() in ['flag', 'warn']:
-#					flags.append("'%s: %s'" % (test, oneliner(ret[1])))
-#				if ret and ret[0].lower() in ['flag-', 'flag+']:
-#					flags.append("'%s: %s'" % (test, oneliner(ret[1])))
-#				if ret and ret[0].lower() not in ['authmx', 'skip', 'break']:
-#					self.mail["action"].insert(0, ret[0].lower())
-#				if ret and (ret[0][-1] in ['-']):
-#					debug("  flag with - ... keep testing", LOG_DEBUG, id=self.id)
-#					lastreason = ret[1]
-#				if ret and (ret[0].lower() in ['reject', 'delete', 'block', 'discard', 'accept', 'ignore'] or ret[0][-1] in ['+']):
-#					debug("  break match found %s %s" % (ret[0].lower(), ret[0][-1]), LOG_DEBUG, id=self.id)
-#					break
-#				continue
-#			except:
-#				debug("ERROR: test_%s failed" % (test), LOG_DEBUG)
-#				debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_DEBUG, id=self.id, trace=True)
-#				if conf["runtime"]["offline"]:
-#					save_vars(self.mail, "/tmp/%s.var" % (self.tmpname), id=self.mail["id"]);
-#			continue
-#
-#		if conf["main"]["timeme"]: self.mail["timer"]["smtp_eom"] = str("%.4f") % (timeme(timer, id=self.id, noshow=True))
-#
-#		if self.mail["action"]:
-#			debug("Actions %s" % (self.mail["action"]), LOG_DEBUG, id=self.mail["id"])
-#			reason = "Blocked by Sspamm Spam Filter"
-#			action = self.mail["action"][0]
-#			if action[-1] in ['+', '-']:
-#				action = action[0:-1]
-#			if action in ['skip']: action = 'pass'
-#			debug("Current Action: %s" % (action), LOG_DEBUG, id=self.mail["id"])
-#
-#		if action in ['reject'] and not (domainrule(self.mail, 'watch', conf["main"]["watchmode"]) or domainrule(self.mail, 'flagall')):
-#			debug("Message will be rejected, don't make any header changes!", LOG_DEBUG, id=self.mail["id"])
-#		else:
-#			if conf["runtime"]["offline"]: debug("X-%s-Scanned: %s" % (conf["main"]["name"], time.strftime('%d.%m.%Y %H:%M:%S')), LOG_DEBUG, id=self.mail["id"])
-#			try: self.chgheader("X-%s-Scanned" % (conf["main"]["name"]), 1, time.strftime('%d.%m.%Y %H:%M:%S'))
-#			except: pass
-#
-#			if conf["runtime"]["offline"]: debug("X-%s-Tests: %s" % (conf["main"]["name"], ", ".join(self.mail["tests"])), LOG_DEBUG, id=self.mail["id"])
-#			try: self.chgheader("X-%s-Tests" % (conf["main"]["name"]), 1, ", ".join(self.mail["tests"]))
-#			except: pass
-#
-#			if conf["runtime"]["offline"]: debug("X-%s-Action: %s" % (conf["main"]["name"], action), LOG_DEBUG, id=self.mail["id"])
-#			try: self.chgheader("X-%s-Action" % (conf["main"]["name"]), 1, action)
-#			except: pass
-#
-#			if self.mail["note"]:
-#				if conf["runtime"]["offline"]: debug("X-%s-Note: %s" % (conf["main"]["name"], ", ".join(self.mail["note"])), LOG_DEBUG, id=self.mail["id"])
-#				try: self.chgheader("X-%s-Note" % (conf["main"]["name"]), 1, ", ".join(self.mail["note"]))
-#				except: pass
-#
-#			if ret:
-#				if conf["runtime"]["offline"]: debug("X-%s-Reason: %s: %s" % (conf["main"]["name"], test, oneliner(ret[1])), LOG_DEBUG, id=self.mail["id"])
-#				try: self.chgheader("X-%s-Reason" % (conf["main"]["name"]), 1, "%s: %s" % (test, oneliner(ret[1])))
-#				except: pass
-#
-#			if (flags and ret) and (flags[0] != "'%s: %s'" % (test, ret[1]) or len(flags) > 1):
-#				if conf["runtime"]["offline"]: debug("X-%s-Flags: %s" % (conf["main"]["name"], ", ".join(flags)), LOG_DEBUG, id=self.mail["id"])
-#				try: self.chgheader("X-%s-Flags" % (conf["main"]["name"]), 1, ", ".join(flags))
-#				except: pass
-#
-### NOTE: WORK HERE, custom flags
-#		debug("Current Action(2): %s" % (action), LOG_DEBUG, id=self.mail["id"])
-#		if action not in ['ignore']:
-#			for to in self.mail["to"]:
-#				log = ""
-#				if not conf["runtime"]["offline"]:
-#					log += "%s" % time.strftime('%Y%m%d %H:%M:%S')
-#					log += " ("
-#
-#				log += "%08d.var" % (self.mail["id"])
-#				if not conf["runtime"]["offline"]:
-#					log += ")"
-#				log += " %s" % (action)
-#
-#				if domainrule(self.mail, 'watch', conf["main"]["watchmode"]): log += "W"
-#				if domainrule(self.mail, 'flagall'): log += "F"
-#				if ret and action not in ['pass']:
-#					log += " (%s: %s" % (test.lower(), ret[1][:80])
-#					if len(ret[1]) > 80:
-#						log += "..."
-#					log += ")"
-#				else:
-#					if flags:
-#						log += " (%s)" % flags[0][1:-1]
-#					else:
-#						log += " ()"
-#
-#				log += " %d" % (int(self.mail["size"]))
-#				log += " %s" % (self.mail["received"][1]["ip"])
-#				if self.mail["received"][1].has_key("dns"):
-#					log += " (%s)" % (self.mail["received"][1]["dns"])
-#				else:
-#					log += " ()"
-#				log += " <%s> <%s> %s" % (self.mail["from"][0], to, self.mail["subject"])
-#
-#				if self.mail["action"] and self.mail["action"][0] not in ['ignore']:
-#					loglines.append(oneliner(stripUnprintable(log)))
-#
-#		if not conf["main"]["childs"]: Tlogger()
-#
-#		if self.mail["action"]:
-#			if action in ['reject','delete','discard','block']:
-#				conf["runtime"]["rrd"]["spam"] += 1
-#			elif action in ['flag','warn']:
-#				conf["runtime"]["rrd"]["unsure"] += 1
-#			elif action not in ['ignore'] :
-#				conf["runtime"]["rrd"]["ham"] += 1
-#
-#			if action in ['reject']:
-#				if not (domainrule(self.mail, 'watch', conf["main"]["watchmode"]) or domainrule(self.mail, 'flagall')):
-#					try: self.setreply("550", "5.7.1", reason)
-#					except: pass
-#					debug("Milter.REJECT (550 5.7.1 - %s)" % (reason), LOG_DEBUG, id=self.mail["id"])
-#					return REJECT
-#
-#			elif action in ['delete','discard','block']:
-#				if not (domainrule(self.mail, 'watch', conf["main"]["watchmode"]) or domainrule(self.mail, 'flagall')):
-#					debug("Milter.DISCARD (%s)" % (reason), LOG_DEBUG, id=self.mail["id"])
-#					return DISCARD
-#
-#			if not domainrule(self.mail, 'watch', conf["main"]["watchmode"]):
-#				if action in ['flag','warn'] or (domainrule(self.mail, 'flagall') and action in ['reject','delete','discard','block']):
-#					if not re.search("{SPAM}: ", self.mail["subject"], re.IGNORECASE):
-#						if conf["runtime"]["offline"]: debug("Subject: {SPAM}: %s" % (self.mail["subject"]), LOG_DEBUG, id=self.mail["id"])
-#						try: self.chgheader("Subject", 1, "{SPAM}: %s" % (self.mail["subject"]))
-#						except: pass
-#				if domainrule(self.mail, 'flagall'):
-#					self.mail["action"].insert(0, "%s in FLAG ALL MODE" % (self.mail["action"][0]))
-#			else:
-#				self.mail["action"].insert(0, "%s in WATCH MODE" % (self.mail["action"][0]))
-#
-#			debug("Milter.ACCEPT", LOG_DEBUG, id=self.mail["id"])
-#			return ACCEPT
-#		debug("Milter.CONTINUE", LOG_DEBUG, id=self.mail["id"])
-#		return CONTINUE
+		self.mail["result"] = {}
+		self.mail["action"] = []
+		self.mail["tests_done"] = []
+		for test in tests:
+			try:
+				(ret, self.mail) = eval("test_"+test)(self.mail)
+				self.mail["tests_done"].append(test)
+				self.mail["result"][test] = ret
+				if ret: debug("\t%s" % (ret[0]), LOG_DEBUG, id=self.id)
+				if ret and (ret[0][-1] in ['-']):
+					debug("\t\tflag with - ... keep testing", LOG_DEBUG, id=self.id)
+					continue
+
+				if ret and (ret[0].lower() in ['flag', 'reject', 'delete', 'block', 'discard', 'accept', 'ignore']):
+					debug("Testing hit found, break testing", LOG_DEBUG, id=self.id)
+					break
+				if ret and ret[0].lower() in ['authmx', 'skip', 'break']:
+					self.mail["action"].insert(0, ret[0].lower())
+			except:
+				debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR, id=self.id)
+			continue
+
+		if conf["main"]["timeme"]: self.mail["timer"]["smtp_"+sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 
 
+###
+### Tests done, now we should know what to do
+###
+#		print "Timer:", show_vars(self.mail["timer"])
+#		print "Tests:",self.mail["tests"]
+#		print "Tests_Done:",self.mail["tests_done"]
+#		print "Result:",show_vars(self.mail["result"])
+#		print "Rules:",self.mail["rules"]
 
 
 
@@ -1313,6 +1129,94 @@ class SpamMilter(Milter.Milter):
 
 
 		return CONTINUE
+
+##############################################################################
+###
+### Define tests
+###
+def test_connect(mail):
+	if conf["main"]["timeme"]: timer = timeme()
+	debug("*%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+
+	res = None
+	seen = []
+	if mail["received"][1]["ip"] == "127.0.0.1": # or mail["received"][1]["ip"] == mail["my"]["ip"]:
+		debug("\tSender is local (me)", LOG_DEBUG, id=mail["id"])
+	else:
+		for rec in mail["received"]:
+#			print show_vars(mail["received"][rec])
+			if not res and mail["received"][rec].has_key("ip"):
+				val = mail["received"][rec]["ip"]
+				if val not in seen:
+					seen.append(val)
+					debug("\tConnect from %s" % (val), LOG_INFO, id=mail["id"])
+#					res = is_listed(val, conf["rules"]["connect"], id=mail["id"])
+			if not res and mail["received"][rec].has_key("dns"):
+				val = mail["received"][rec]["dns"]
+				if val not in seen:
+					seen.append(val)
+					debug("\tConnect from %s (dns)" % (val), LOG_INFO, id=mail["id"])
+#					res = is_listed(conf["rules"]["connect"], val, id=mail["id"])
+			if not res and mail["received"][rec].has_key("helo"):
+				val = mail["received"][rec]["helo"]
+				if val not in seen:
+					seen.append(val)
+					debug("\tConnect from %s (helo)" % (val), LOG_INFO, id=mail["id"])
+#					res = is_listed(val, conf["rules"]["connect"], id=mail["id"])
+			if res:
+				break
+## break for NOT to be RECURSIVE (Should it be? or not?)
+#			break
+
+	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
+	return (res, mail)
+
+def test_helo(mail):
+	if conf["main"]["timeme"]: timer = timeme()
+	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+
+	res = None
+	seen = []
+	for rec in mail["received"]:
+		if not res and mail["received"][rec].has_key("helo"):
+			val = mail["received"][rec]["helo"]
+			if val not in seen:
+				seen.append(val)
+				debug("\tHelo %s" % (val), LOG_INFO, id=mail["id"])
+				res = is_listed(val, conf["rules"]["helo"], id=mail["id"])
+
+	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
+	return (res, mail)
+
+def test_headers(mail):
+	if conf["main"]["timeme"]: timer = timeme()
+	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+
+	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
+	return (["flag", "Blacklisted IP"], mail)
+	return (None, mail)
+
+def test_wordscan(mail):
+	if conf["main"]["timeme"]: timer = timeme()
+	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+
+	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
+	return (None, mail)
+
+def test_dyndns(mail):
+	if conf["main"]["timeme"]: timer = timeme()
+	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+
+	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
+	return (None, mail)
+
+def test_rbl(mail):
+	if conf["main"]["timeme"]: timer = timeme()
+	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+
+	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
+	return (None, mail)
+
 
 ##############################################################################
 ###
@@ -1496,6 +1400,8 @@ def Tconfig(childname=None, doverbose=None):
 ##############################################################################
 ### Main Functions
 def debug(args=None, level=LOG_DEBUG, id=None, trace=None, verb=None):
+	show = LOG_DEBUG
+	if(level > show): return
 	try:
 		if(trace): debug("Trace path: %s" % (show_framepath()), level)
 		if(trace):

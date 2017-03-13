@@ -40,14 +40,14 @@ except:
 	UseSHA=24
 	import sha
 
-## LOG_EMERG               = 0             #  system is unusable
-## LOG_ALERT               = 1             #  action must be taken immediately
-## LOG_CRIT                = 2             #  critical conditions
-## LOG_ERR                 = 3             #  error conditions
-## LOG_WARNING             = 4             #  warning conditions
-## LOG_NOTICE              = 5             #  normal but significant condition
-## LOG_INFO                = 6             #  informational
-## LOG_DEBUG               = 7             #  debug-level messages
+## LOG_EMERG		= 0		# system is unusable
+## LOG_ALERT		= 1		# action must be taken immediately
+## LOG_CRIT		= 2		# critical conditions
+## LOG_ERR		= 3		# error conditions
+## LOG_WARNING		= 4		# warning conditions
+## LOG_NOTICE		= 5		# normal but significant condition
+## LOG_INFO		= 6		# informational
+## LOG_DEBUG		= 7		# debug-level messages
 from syslog import \
 	LOG_EMERG, LOG_ALERT, LOG_CRIT, LOG_ERR, \
 	LOG_WARNING, LOG_NOTICE, LOG_INFO, LOG_DEBUG
@@ -57,8 +57,8 @@ from syslog import \
 ##
 import Milter
 from milter import \
-       ACCEPT, CONTINUE, REJECT, DISCARD, TEMPFAIL, \
-       ADDHDRS, CHGBODY, ADDRCPT, DELRCPT, CHGHDRS
+	ACCEPT, CONTINUE, REJECT, DISCARD, TEMPFAIL, \
+	ADDHDRS, CHGBODY, ADDRCPT, DELRCPT, CHGHDRS
 
 try: from milter import QUARANTINE
 except: pass
@@ -650,40 +650,52 @@ def reversedns(ip, id=None):
 def oneliner(value, id=None):
 	return re.sub(" + ", " ", re.sub("[\r\n\t]", " ", value))
 
-#def is_listed(needle, heystack, id=None):
-def is_listed(needle,heystack,flags=re.IGNORECASE+re.MULTILINE,id=None,noshow=None,norecursive=False):
-	debug("%s(needle=%s, heystack=%s, id=%s)" % (sys._getframe().f_code.co_name, needle, heystack, id), LOG_DEBUG, id=id)
-	tmp = None
-	n = 0
+def is_listed(needle,heystack,flags=re.IGNORECASE+re.MULTILINE,id=None,debugval=LOG_DEBUG):
 	try:
 		if not needle or not heystack or len(needle) < 1 or len(heystack) < 1: return
 	except:
 		return False
-	if type(needle) is int: needle = str(needle)
-	if type(heystack) is str: heystack = [heystack]
+	tmp = None
+	loops = 0
 
-	if type(needle) is not str:
-# What was "list" of things to look, loop thru them, break on first.
-		for i in needle:
-			if is_listed(i,heystack,flags=flags,id=id,noshow=noshow): break
-	else:
-# needle is string. Now for magic part, look for match
+	if type(needle) is int: needle = [str(needle)]
+	elif type(needle) is str:
+		needle = needle.splitlines()
+		try: needle.remove("")
+		except: pass
+		if type(needle) is str: needle = [needle]
 
+	if type(heystack) is str: heystack=[heystack]
+	for h in heystack:
+		if len(h) > 30: hs = oneliner(h[0:27])+"..."
+		else: hs = oneliner(h)
+		for n in needle:
+			if len(n) > 30: ns = oneliner(n[0:27])+"..."
+			else: ns = oneliner(n)
+			loops += 1
+			debug("%s(needle=\"%s\", heystack=\"%s\", id=%s)" % (sys._getframe().f_code.co_name, ns, hs, id), debugval+2, id=id)
 # Any possibility for direct hit?
-#		print "We try search (regex)string '%s' from '%s'" % (needle, heystack)
-		for i in heystack:
-			if needle in i:
-				debug("\tDirect hit: %s" % (i), LOG_DEBUG, id=id)
-				return i
+			if n == h or n in h:
+				debug("\tDirect hit: %s" % (n), debugval, id=id)
+# TODO: We need to use 'default' action
+				return (True, n)
 			try:
-				tmp = re.search(needle, i, flags)
+				tmp = re.search(n, h, flags)
 			except:
 				debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR)
-				debug("FAILED: is_listed(%s, %s)" % (haystack, needle), LOG_ERR, id=id)
+				debug("FAILED: is_listed(%s, %s)" % (h[0:60], n[0:60]), LOG_ERR, id=id)
 				continue
 			if tmp:
-				debug("\tRegex match to: %s" % (tmp.group()), LOG_DEBUG, id=id)
-				return tmp.group()
+# We got regexp match, now parse it
+                                retval = True
+				debug("\tRegex %s: %s" % (loops, n), debugval+1, id=id)
+				debug("\tRegex match %s-%s as: %s" % (tmp.span()[0], tmp.span()[1], tmp.group()), debugval+1, id=id)
+				if tmp.groupdict(): debug("\tRegex keys: %s" % (tmp.groupdict()), debugval+1, id=id) # {"name": 'value'} ... for (?P<name>value.*)
+# Do we have comment on front if regexp rule?
+                                comment = re.search("^\(\?#.*?\)", n)
+				if comment:
+                                        retval = comment.group()[3:-1]
+				return (retval, n, tmp.group(), tmp.groupdict())
 	return None
 
 ##############################################################################
@@ -1001,6 +1013,7 @@ class SpamMilter(Milter.Milter):
 				debug("sha.new: %s" % (self.mail["checksum"]), LOG_DEBUG, id=self.id)
 
 		self.mail["size"] += len(chunk)
+		self.mail["raw"] += chunk
 		if self.tmp: self.tmp.write(chunk)
 
 		if conf["main"]["timeme"]: self.mail["timer"]["smtp_"+sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
@@ -1019,11 +1032,13 @@ class SpamMilter(Milter.Milter):
 		rules = None
 		try:
 			self.mail["todomain"] = self.mail["to"][0].split("@")[1]
+			debug("Checking for filtered domains", LOG_DEBUG, id=self.id)
 			for a in conf["filter"]["domains"]:
 				if is_listed(a[0], self.mail["todomain"], id=self.mail["id"]):
 					tests=a[1]
 					break
 
+			debug("Looking for domain \"%s\" rules" % (a[0]), LOG_DEBUG, id=self.id)
 			for a in conf["filter"]["rules"]:
 				if is_listed(a[0], self.mail["todomain"], id=self.mail["id"]):
 					rules=a[1]
@@ -1099,6 +1114,8 @@ class SpamMilter(Milter.Milter):
 					break
 				if ret and ret[0].lower() in ['authmx', 'skip', 'break']:
 					self.mail["action"].insert(0, ret[0].lower())
+			except SystemExit, extlvl:
+				sys.exit(extlvl)
 			except:
 				debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR, id=self.id)
 			continue
@@ -1153,19 +1170,19 @@ def test_connect(mail):
 				if val not in seen:
 					seen.append(val)
 					debug("\tConnect from %s" % (val), LOG_INFO, id=mail["id"])
-#					res = is_listed(val, conf["rules"]["connect"], id=mail["id"])
+					res = is_listed(conf["rules"]["connect"], val, id=mail["id"])
 			if not res and mail["received"][rec].has_key("dns"):
 				val = mail["received"][rec]["dns"]
 				if val not in seen:
 					seen.append(val)
 					debug("\tConnect from %s (dns)" % (val), LOG_INFO, id=mail["id"])
-#					res = is_listed(conf["rules"]["connect"], val, id=mail["id"])
+					res = is_listed(conf["rules"]["connect"], val, id=mail["id"])
 			if not res and mail["received"][rec].has_key("helo"):
 				val = mail["received"][rec]["helo"]
 				if val not in seen:
 					seen.append(val)
 					debug("\tConnect from %s (helo)" % (val), LOG_INFO, id=mail["id"])
-#					res = is_listed(val, conf["rules"]["connect"], id=mail["id"])
+					res = is_listed(conf["rules"]["connect"], val, id=mail["id"])
 			if res:
 				break
 ## break for NOT to be RECURSIVE (Should it be? or not?)
@@ -1202,6 +1219,14 @@ def test_headers(mail):
 def test_wordscan(mail):
 	if conf["main"]["timeme"]: timer = timeme()
 	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+
+	res = None
+	if not res and mail.has_key("raw"):
+# NOTE! This may pass REALLY BIG values to is_listed
+		if conf["rules"].has_key("blockwords"):
+			res = is_listed(conf["rules"]["blockwords"], mail["raw"], id=mail["id"])
+		else:
+			res = is_listed(conf["rules"]["wordscan"], mail["raw"], id=mail["id"])
 
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 	return (None, mail)
@@ -1487,10 +1512,10 @@ def main():
 	else:
 # If we run as stand-alone, we need signals for config reloading with SIGHUP
 		Tconfig()
-		signal(SIGHUP , Tconfig)   # 1
-		signal(SIGINT , cleanquit) # ^C
-		signal(SIGBUS , cleanquit) # 7
-		signal(SIGTERM, cleanquit) # 15
+		signal(SIGHUP , Tconfig)	# 1
+		signal(SIGINT , cleanquit)	# ^C
+		signal(SIGBUS , cleanquit)	# 7
+		signal(SIGTERM, cleanquit)	# 15
 
 	wtime = 0
 	maxwtime = 5

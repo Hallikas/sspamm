@@ -651,10 +651,15 @@ def oneliner(value, id=None):
 	return re.sub(" + ", " ", re.sub("[\r\n\t]", " ", value))
 
 def is_listed(needle,heystack,flags=re.IGNORECASE+re.MULTILINE,id=None,debugval=LOG_DEBUG):
+	if len(heystack) > 30: hs = oneliner(heystack[0:27])+"..."
+	else: hs = oneliner(heystack)
+	if len(needle) > 30: ns = oneliner(needle[0:27])+"..."
+	else: ns = oneliner(needle)
+	debug("%s(needle=\"%s\", heystack=\"%s\", id=%s)" % (sys._getframe().f_code.co_name, ns, hs, id), debugval+1, id=id)
 	try:
-		if not needle or not heystack or len(needle) < 1 or len(heystack) < 1: return
+		if not needle or not heystack or len(needle) < 1 or len(heystack) < 1: return (False, 0)
 	except:
-		return False
+		return (False, 0)
 	tmp = None
 	loops = 0
 
@@ -670,6 +675,7 @@ def is_listed(needle,heystack,flags=re.IGNORECASE+re.MULTILINE,id=None,debugval=
 		if len(h) > 30: hs = oneliner(h[0:27])+"..."
 		else: hs = oneliner(h)
 		for n in needle:
+			if type(n) is tuple: n=n[0]
 			if len(n) > 30: ns = oneliner(n[0:27])+"..."
 			else: ns = oneliner(n)
 			loops += 1
@@ -678,7 +684,7 @@ def is_listed(needle,heystack,flags=re.IGNORECASE+re.MULTILINE,id=None,debugval=
 			if n == h or n in h:
 				debug("\tDirect hit: %s" % (n), debugval, id=id)
 # TODO: We need to use 'default' action
-				return (True, n)
+				return (True, loops, n)
 			try:
 				tmp = re.search(n, h, flags)
 			except:
@@ -687,16 +693,16 @@ def is_listed(needle,heystack,flags=re.IGNORECASE+re.MULTILINE,id=None,debugval=
 				continue
 			if tmp:
 # We got regexp match, now parse it
-                                retval = True
+				retval = True
 				debug("\tRegex %s: %s" % (loops, n), debugval+1, id=id)
 				debug("\tRegex match %s-%s as: %s" % (tmp.span()[0], tmp.span()[1], tmp.group()), debugval+1, id=id)
 				if tmp.groupdict(): debug("\tRegex keys: %s" % (tmp.groupdict()), debugval+1, id=id) # {"name": 'value'} ... for (?P<name>value.*)
 # Do we have comment on front if regexp rule?
-                                comment = re.search("^\(\?#.*?\)", n)
+				comment = re.search("^\(\?#.*?\)", n)
 				if comment:
-                                        retval = comment.group()[3:-1]
-				return (retval, n, tmp.group(), tmp.groupdict())
-	return None
+					retval = comment.group()[3:-1]
+				return (retval, loops, n, tmp.group(), tmp.groupdict())
+	return (None, loops)
 
 ##############################################################################
 ### Basic fileoperations (Usualy we don't need to care if it success or not)
@@ -847,6 +853,7 @@ class SpamMilter(Milter.Milter):
 		return CONTINUE
 
 	def connect(self,host,family,hostaddr):
+		if conf["main"]["timeme"]: self.mail["timer"]["passthru"] = timeme()
 		if conf["main"]["timeme"]: timer = timeme()
 		debug("SpamMilter.connect(%s, %s)" % (host,hostaddr), LOG_DEBUG, id=self.id)
 # Crashes if IPV6 / SEMI
@@ -913,7 +920,7 @@ class SpamMilter(Milter.Milter):
 
 	def header(self,field,value):
 		if not self.mail["timer"].has_key("smtp_header") and conf["main"]["timeme"]: self.mail["timer"]["smtp_header"] = timeme()
-		debug("SpamMilter.header(%s, %s)" % (field,value), LOG_DEBUG, id=self.id)
+		debug("SpamMilter.header(%s, %s)" % (field,value), LOG_DEBUG+1, id=self.id)
 
 		lfield = field.lower() # Lower case field name
 ### Headers to drop ... just proof-of-concept
@@ -923,10 +930,13 @@ class SpamMilter(Milter.Milter):
 		if len(self.mail["header"]) == 0:
 			self.mail["size"] = 0
 			self.mail["subject"] = ""
+#			self.mail["header"]["raw"] = "%s: %s\n" % (field, value)
 			if self.tmp:
 				self.tmp.write("From %s %s\n" % (self.mail["from"][0], time.ctime()))
-		elif self.tmp:
-			self.tmp.write("%s: %s\n" % (field, value))
+		else:
+#			self.mail["header"]["raw"] += "%s: %s\n" % (field, value)
+			if self.tmp:
+				self.tmp.write("%s: %s\n" % (field, value))
 
 ### Note, this is NOT endless loop, it is just used like switch-case
 ### statement.  We break out when perferred line has been processed.
@@ -1063,6 +1073,9 @@ class SpamMilter(Milter.Milter):
 		debug("\tRules: %s" % (rules), LOG_DEBUG, id=self.id)
 		self.mail["rules"] = rules
 
+# End eom() timer here
+		if conf["main"]["timeme"]: self.mail["timer"]["smtp_"+sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
+
 		subchar = []
 		try:
 			if self.tmp:
@@ -1080,13 +1093,15 @@ class SpamMilter(Milter.Milter):
 #				charset.append(subchar)
 #				self.mail["charset"]=uniq(charset)
 		except:
-			debug("EOM Exception, REJECTED", LOG_ERR, id=self.id)
+			debug("eom() EXCEPTION: %s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR, id=self.id, trace=False)
+			try:
+				if self.tmp: self.tmp.close()
+			except:
+				pass
 #			try: self.setreply("421", "4.2.1", "Error while parsing MIME structre of message, try again.")
 #			except: pass
 ##			return Milter.REJECT
-			debug("eom(): %s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR, id=self.id, trace=False)
-#			if self.tmp:
-#				self.tmp.close()
+# Save for debug
 #				mv(self.tmp.name, "/tmp/%s" % (self.tmpname))
 #				save_vars(self.mail, "/tmp/%s.var" % (self.tmpname), id=self.mail["id"]);
 #				debug("saved as /tmp/%s" % (self.tmpname), LOG_ERR, id=self.id, trace=False)
@@ -1096,6 +1111,7 @@ class SpamMilter(Milter.Milter):
 ###
 ### Now message is received and processed. Fun part begins now, testing.
 ###
+		if conf["main"]["timeme"]: timer = timeme()
 		self.mail["result"] = {}
 		self.mail["action"] = []
 		self.mail["tests_done"] = []
@@ -1103,34 +1119,39 @@ class SpamMilter(Milter.Milter):
 			try:
 				(ret, self.mail) = eval("test_"+test)(self.mail)
 				self.mail["tests_done"].append(test)
+				if ret and type(ret) is bool:
+					if conf["actions"].has_key(test): ret = conf["actions"][test]
+# This is our 'master default' for any match
+					else: ret = "flag"
 				self.mail["result"][test] = ret
-				if ret: debug("\t%s" % (ret[0]), LOG_DEBUG, id=self.id)
-				if ret and (ret[0][-1] in ['-']):
-					debug("\t\tflag with - ... keep testing", LOG_DEBUG, id=self.id)
-					continue
-
-				if ret and (ret[0].lower() in ['flag', 'reject', 'delete', 'block', 'discard', 'accept', 'ignore']):
-					debug("Testing hit found, break testing", LOG_DEBUG, id=self.id)
-					break
-				if ret and ret[0].lower() in ['authmx', 'skip', 'break']:
-					self.mail["action"].insert(0, ret[0].lower())
+				if ret and ret[0]:
+					print ret[0][-1]
+					print ret[0][1]
+					if (ret[0][-1] in ['-']) or (ret[0][1] in ['-']):
+						print "Marker found"
+						debug("\t\tflag with - ... keep testing", LOG_DEBUG, id=self.id)
+						continue
+#					if ret and (ret[0].lower() in ['flag', 'reject', 'delete', 'block', 'discard', 'accept', 'ignore']):
+#						debug("Testing hit found, break testing", LOG_DEBUG, id=self.id)
+#						break
+#					if ret and ret[0].lower() in ['authmx', 'skip', 'break']:
+#						self.mail["action"].insert(0, ret[0].lower())
 			except SystemExit, extlvl:
+				break
 				sys.exit(extlvl)
 			except:
 				debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR, id=self.id)
 			continue
 
-		if conf["main"]["timeme"]: self.mail["timer"]["smtp_"+sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
-
-
+		del self.mail["raw"]
+#	 	print show_vars(self.mail)
 ###
 ### Tests done, now we should know what to do
 ###
-#		print "Timer:", show_vars(self.mail["timer"])
-#		print "Tests:",self.mail["tests"]
-#		print "Tests_Done:",self.mail["tests_done"]
-#		print "Result:",show_vars(self.mail["result"])
-#		print "Rules:",self.mail["rules"]
+		if conf["main"]["timeme"]: self.mail["timer"]["all_tests"] = str("%.4f") % timeme(timer)
+# self.mail["tests"]		Tests need to be executed for domain
+# self.mail["tests_done"]	Tests executed
+# self.mail["rules"]		Special handling rules for domain
 
 
 
@@ -1145,9 +1166,10 @@ class SpamMilter(Milter.Milter):
 
 
 
-
-
-
+		if conf["main"]["timeme"]: self.mail["timer"]["passthru"] = str("%.4f") % timeme(self.mail["timer"]["passthru"])
+# Timing information
+		print "Timer:", show_vars(self.mail["timer"])
+		print "Result:", show_vars(self.mail["result"])
 		return CONTINUE
 
 ##############################################################################
@@ -1156,12 +1178,14 @@ class SpamMilter(Milter.Milter):
 ###
 def test_connect(mail):
 	if conf["main"]["timeme"]: timer = timeme()
-	debug("*%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
 
 	res = None
 	seen = []
+	loops = 0
 	if mail["received"][1]["ip"] == "127.0.0.1": # or mail["received"][1]["ip"] == mail["my"]["ip"]:
 		debug("\tSender is local (me)", LOG_DEBUG, id=mail["id"])
+		loops += 1
 	else:
 		for rec in mail["received"]:
 #			print show_vars(mail["received"][rec])
@@ -1183,7 +1207,8 @@ def test_connect(mail):
 					seen.append(val)
 					debug("\tConnect from %s (helo)" % (val), LOG_INFO, id=mail["id"])
 					res = is_listed(conf["rules"]["connect"], val, id=mail["id"])
-			if res:
+			if res: loops += res[1]
+			if res and res[0]:
 				break
 ## break for NOT to be RECURSIVE (Should it be? or not?)
 #			break
@@ -1212,24 +1237,55 @@ def test_headers(mail):
 	if conf["main"]["timeme"]: timer = timeme()
 	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
 
+	res = None
+	loops=0
+# 0.05s
+	mail["header"]["raw"] = ""
+	for a in mail["header"]:
+		if a in ["raw"]: continue
+		if type(mail["header"][a]) is list:
+			for b in mail["header"][a]:
+				mail["header"]["raw"] += "%s: %s\n" % (a, b)
+		else:
+			mail["header"]["raw"] += "%s: %s\n" % (a, mail["header"][a])
+
+	res = is_listed(conf["rules"]["headers"], mail["header"]["raw"], id=mail["id"])
+
+#	 for a in mail["header"]:
+#		 if type(mail["header"][a]) is list:
+#			 for b in mail["header"][a]:
+#				 res = is_listed(conf["rules"]["headers"], "%s: %s" % (a, b), id=mail["id"])
+#				 if res: loops += res[1]
+#				 if res and res[0]: break
+#		 else:
+#			 res = is_listed(conf["rules"]["headers"], "%s: %s" % (a, mail["header"][a]), id=mail["id"])
+#			 if res: loops += res[1]
+#		 if res and res[0]: break
+#	return ((res[0], loops), mail)
+
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
-	return (["flag", "Blacklisted IP"], mail)
-	return (None, mail)
+	return (res, mail)
 
 def test_wordscan(mail):
 	if conf["main"]["timeme"]: timer = timeme()
 	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
 
 	res = None
+	action = None
 	if not res and mail.has_key("raw"):
 # NOTE! This may pass REALLY BIG values to is_listed
-		if conf["rules"].has_key("blockwords"):
+		if not res and conf["rules"].has_key("blockwords"):
 			res = is_listed(conf["rules"]["blockwords"], mail["raw"], id=mail["id"])
-		else:
+		if not res and conf["rules"].has_key("wordscan"):
 			res = is_listed(conf["rules"]["wordscan"], mail["raw"], id=mail["id"])
-
+		if res and res[0]:
+			action = res[0]
+			matchre = res[2]
+			matchstr = res[3]
+	else:
+		debug("\tMail does not have 'raw' part", LOG_INFO, id=mail["id"])
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
-	return (None, mail)
+	return (res, mail)
 
 def test_dyndns(mail):
 	if conf["main"]["timeme"]: timer = timeme()
@@ -1278,6 +1334,7 @@ def test_crc(mail):
 	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
 
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
+#	return (["flag", "Blacklisted IP"], mail)
 	return (None, mail)
 
 ##############################################################################
@@ -1467,7 +1524,7 @@ def debug(args=None, level=LOG_DEBUG, id=None, trace=None, verb=None):
 	show = conf["runtime"]["args"]["debug"]
 	if conf["runtime"]["args"]["v"]:
 		show += conf["runtime"]["args"]["v"]
-	
+
 	if(level > show): return
 	try:
 		if(trace): debug("Trace path: %s" % (show_framepath()), level)

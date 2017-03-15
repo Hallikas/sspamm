@@ -29,6 +29,10 @@ from traceback import print_exc
 from email import message_from_file, message_from_string
 from email.Header import decode_header
 
+from string import maketrans, letters, digits, punctuation, whitespace
+
+import formatter, htmllib
+
 UseSHA=0
 try:
 # For python > 2.4
@@ -156,6 +160,7 @@ conf["runtime"] = {
 	"conffile":	None,
 	"conftime":	0,
 	"offline":	False,
+	"nodebug":	False,
 	"rrd":		{
 		"ham":		0,
 		"unsure":	0,
@@ -286,7 +291,7 @@ def maildef():
 				"helo": None,
 			}
 		},
-		"rawsubject": None,
+		"subject": {},
 		"raw": '',
 		"timer": {},
 		"result": {},
@@ -445,60 +450,75 @@ def save_vars(var, fname, id=None):
 
 # Note: This should be confirmed by someone else
 # Checked 19.2.2017, - Semi - NOTE!
-def load_vars(fname, id=None):
-	debug("load_vars(\"%s\")" % (fname), LOG_DEBUG, id=id)
-	fp = open(fname, "r")
+def load_mailvar(fname, id=None):
+	debug("load_mailvar(\"%s\")" % (fname), LOG_DEBUG, id=id)
 	is_raw = False
 	raw = None
 	do_skip = False
 	line_cont = False
 	do_show = False
 	name = None
-	buf = ""
+	hname = None
 
-	while 1:
-		line = fp.readline()
-		if line == "}" or len(line) < 1:
-			buf += line
-			break
-		if len(line) > 1 and line[1] == "\"":
-			name = line[2:line.rfind("\"")]
-			do_skip = False
-		elif do_skip and line[1:3] == "},":
-			do_skip = False
-			continue
+	var_work = "{\n"
+	var_raw = ""
+	var_hraw = ""
+	var_rec = ""
+	with open(fname, "r") as fp:
+		for line in fp:
+			n = len(line)
+			if n > 80: n=80
 
-		if do_skip or name in ["mime", "result", "smtpcmds", "tests", "note", "rules", "charset", "checksum", "timer", "todomain", "ipfromto", "action", "size", "type", "my"]:
-			do_skip = True
-			continue
-		elif name in ["raw"] and is_raw == False:
-			is_raw = True
-			raw = line[9:]
-			continue
-		if is_raw:
-			if line[-3:] == "',\n":
-				line = line[:-3]
-				is_raw = False
-			raw += line
-			continue
-
-#
-# Note: line_cont is used to detect 'multiline' values from .var file. This
-# WILL get broken if line does end with , but quotes are not closed!  This
-# is known bug, and we will address it later.
-#
-		if not do_skip:
-			if line[-2:] not in [",\n", "{\n", "(\n", "[\n"]:
-				line_cont = True
+			if is_raw:
+				if line[0:-1] == "',":
+					is_raw = False
+				elif line[-3:-1] == "',":
+					if line[-4] is not "\\":
+						is_raw = False
 			else:
-				line_cont = False
-			if line_cont:
-				line = line[:-1]+"\\n"
-				pass
-			buf += line
+				res = is_listed("^\W\"(?P<name>[\w-]+)\":", line)
+				if res and res[0]:
+					name=res[4]["name"]
+					do_skip = False
+					if name == "raw": is_raw = True
+					if name == "header": continue
+
+				res = is_listed("^\W[\)\]}],|^\}", line)
+				if res and res[0]:
+					do_skip = False
+					if name in ["id", "from", "to", "my"]:
+						var_work += line
+						continue
+					name = None
+
+			if name in ["received"]:
+				var_rec += line
+
+			if name in ["header"]:
+				res = is_listed("^\W+\"(?P<name>[\w-]+)\":", line)
+				if res and res[0]:
+					hname = res[4]["name"]
+					if hname == "raw":
+						is_raw = True
+						var_hraw = line
+				elif hname in ["raw"]:
+					var_hraw += line
+
+			if name in ["id", "from", "to", "my"]:
+				var_work += line
+			if name in ["raw"]:
+				var_raw += line
+
 	fp.close()
-	vars = eval(buf)
-	if raw: vars["raw"] = raw
+	vars = eval(var_work)
+	var_tmp = eval("{\n%s\n\t}\n}" % var_rec)
+	vars["received"] = {}
+	vars["received"][1] = var_tmp["received"][1]
+	if var_hraw:
+		vars["header"] = {}
+		vars["header"]["raw"] = var_hraw[10:-3]
+	vars["raw"] = var_raw[9:-3]
+
 	return vars
 
 # Note: This should be confirmed by someone else
@@ -563,6 +583,23 @@ def show_vars(var, lvl=0):
 ##############################################################################
 ### Custom tools
 
+class HTMLStripper(htmllib.HTMLParser):
+	def __init__(self):
+#		debug("HTMLStripper.__init__()", LOG_DEBUG)
+		self.bodytext = StringIO.StringIO()
+		writer = formatter.DumbWriter(self.bodytext)
+		htmllib.HTMLParser.__init__(self, formatter.AbstractFormatter(writer))
+
+	def anchor_end(self):
+#		debug("HTMLStripper.anchor_end()", LOG_DEBUG)
+		if self.anchor:
+			self.handle_data('')
+			self.anchor = None
+
+	def gettext(self):
+#		debug("HTMLStripper.gettext()", LOG_DEBUG)
+		return self.bodytext.getvalue()
+
 ## Used for trace processing time, so we can find if there is things that takes too long to complete
 def timeme(timer=0):
 	if timer == 0: return time.time()
@@ -582,15 +619,34 @@ def parse_addrs(addr, id=None):
 	else:
 		return [addr]
 
+### Test if IP or HOSTNAME is local
+def islocal(a, id=None):
+	debug("islocal(\"%s\")" % (a), LOG_DEBUG+1, id=id)
+	try:
+		b = re.search("^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", a)
+		if b:
+			# Is IP
+			if re.search("^127\.", a): return True
+		else:
+			# is Name
+			if a in ["localhost"]: return True
+	except:
+		debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR)
+
+	return False
+
 ### Test if IP or HOSTNAME is local/private
 def isprivate(a, id=None):
-	debug("isprivate(\"%s\")" % (a), LOG_DEBUG, id=id)
+	debug("isprivate(\"%s\")" % (a), LOG_DEBUG+1, id=id)
+	try:
+		if islocal(a, id): return True
+	except:
+		pass
 	try:
 		b = re.search("^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", a)
 		if b:
 			# Is IP
 			# List collected from https://en.wikipedia.org/wiki/Reserved_IP_addresses
-			if re.search("^127\.", a): return True
 			if re.search("^10\.", a): return True
 			if re.search("^100\.(6[4-9]|([7-9]|1[01])[0-9]|12[0-7])\.", a): return True
 			if re.search("^169\.254\.", a): return True
@@ -605,8 +661,8 @@ def isprivate(a, id=None):
 			if re.search("^2(2[4-9]|3[0-9])\.", a): return True
 			if re.search("^^2(4[0-9]|5[0-5])\.", a): return True
 		else:
-			# is Name
-			if a in ["localhost"]: return True
+			# Is DNS Name
+			return False
 	except:
 		debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR)
 
@@ -646,6 +702,105 @@ def reversedns(ip, id=None):
 	debug("\tPTR reply: %s" % (ptr), LOG_DEBUG, id=id)
 	return ptr
 
+### Generate ip:from:to stings
+def makeipfromto(mail):
+	if conf["main"]["timeme"] is True: timer = timeme()
+	debug("makeipfromto()", LOG_DEBUG, id=mail["id"])
+
+	if mail.has_key("ipfromto"): return
+
+	mail["ipfromto"] = { "raw": "",}
+	for to in mail["to"]:
+		mail["ipfromto"][to] = []
+		for rec in mail["received"]:
+			if mail["received"][rec].has_key("dns") and mail["received"][rec]["dns"]:
+				tmp = "%s:%s" % (mail["received"][rec]["dns"],mail["from"][0])
+				if tmp not in mail["ipfromto"][to]:
+					debug("\tAppend (dns) %s" % (tmp), LOG_DEBUG+1, id=mail["id"])
+					mail["ipfromto"][to].append(tmp)
+					mail["ipfromto"]["raw"] += "%s:%s\n" % (tmp,to)
+			if mail["received"][rec].has_key("ip"):
+				tmp = "%s:%s" % (mail["received"][rec]["ip"],mail["from"][0])
+			if tmp not in mail["ipfromto"][to]:
+				mail["ipfromto"][to].append(tmp)
+				mail["ipfromto"]["raw"] += "%s:%s\n" % (tmp,to)
+				debug("\tAppend (ip) %s" % (tmp), LOG_DEBUG+1, id=mail["id"])
+# NOTE! If there is SEVERAL recipients, use only FIRST to create ipfromto
+#		break
+
+#	for rec in mail["received"]:
+#		for to in mail["to"]:
+#			if mail["received"][rec].has_key("dns") and mail["received"][rec]["dns"]:
+#				tmp = "%s:%s:%s" % (mail["received"][rec]["dns"],mail["from"][0],to)
+#				if tmp not in mail["ipfromto"]:
+#					debug("\tAppend %s" % (tmp), LOG_DEBUG, id=mail["id"])
+#					mail["ipfromto"].append(tmp)
+#
+#			tmp = "%s:%s:%s" % (mail["received"][rec]["ip"],mail["from"][0],to)
+#			if tmp not in mail["ipfromto"]:
+#				mail["ipfromto"].append(tmp)
+
+#	print show_vars(mail["ipfromto"])
+	return 
+
+def strcleanup(str, id=None):
+	if conf["main"]["timeme"] is True: timer = timeme()
+	debug("*strcleanup()", LOG_INFO, id=id)
+	str = re.sub("&Aring;|&#197;|&#xC5;", "Å", str)
+	str = re.sub("&Auml;|&#196;|&#xC4;", "Ä", str)
+	str = re.sub("&Ouml;|&#214;|&#xD6;", "Ö", str)
+
+	str = re.sub("&aring;|&#229;|&#xE5;|Å", "å", str)
+	str = re.sub("&auml;|&#228;|&#xE4;|Ä|�", "ä", str)
+	str = re.sub("&ouml;|&#246;|&#xF6;|Ö|�", "ö", str)
+
+	str = re.sub("&gt;|&#62;|&#x3E;", ">", str)		#>
+	str = re.sub("&lt;|&#60;|&#x3C;", "<", str)		#<
+	str = re.sub("&nbsp;|&#160;|&#xA0;", " ", str)		# 
+	str = re.sub(" ?(&euro;|&#8364;)", "€", str)		#€
+	str = re.sub("&copy;|&#169;|&#xA9;", "(c)", str)	#(c)
+	str = re.sub("&ndash;|&hypen;", "-", str)		#-
+	str = re.sub("&acute;", "", str)			#'
+	str = re.sub("&quot;|&[rl][ads]quo;", "", str)		#"
+	str = re.sub("&amp;|&#38;|&#x26;", "&", str)		#&
+	str = re.sub("&hellip;", "...", str)			#...
+	str = re.sub("\\\\'", "\'", str)			#\\' -> \'
+	str = re.sub('\\\\"', '\"', str)			#\\" -> \"
+	return str
+
+def html_strip(htmlstr, id=None):
+	if conf["main"]["timeme"] is True: timer = timeme()
+	debug("*html_strip()", LOG_INFO, id=id)
+	htmlstr = oneliner(htmlstr)
+	htmlstr = re.sub("<style.*?</style>", " ", htmlstr)
+	htmlstr = re.sub("<font (color=.*? )?size=(\")?1(\")?>.*?</font>\n", "", htmlstr)
+#	htmlstr = re.sub("<DIV>.*?</DIV>\n", "", htmlstr)
+	htmlstr = re.sub("<.+?>", " ", htmlstr)
+	htmlstr = re.sub(" + ", " ", htmlstr)
+
+#	try:
+#DBG# - I think that HTML stripper is not working?
+#		nohtml=HTMLStripper()
+#		htmlstr = "foobar"
+#		nohtml.feed(htmlstr)
+#		nohtml.close()
+#	except:
+#		print "excepted"
+#		print("%s: %s" % (sys.exc_type, sys.exc_value))
+	if conf["main"]["timeme"] is True: timer = timeme()
+#	return (re.sub("\(image\)", "", re.sub("\xa0", "", nohtml.gettext())), nohtml.anchorlist)
+	return htmlstr
+
+# Strip character that can't print
+def stripUnprintable(input_string, id=None):
+#	debug("stripUnprintable()", LOG_DEBUG, id=id)
+	try: filterUnprintable = stripUnprintable.filter
+	except AttributeError: # only the first time it is called
+		allchars = maketrans('','')
+		delchars = allchars.translate(allchars, letters+digits+punctuation+whitespace)
+		filterUnprintable = stripUnprintable.filter = lambda input: input.translate(allchars, delchars)
+	return filterUnprintable(input_string)
+
 # Make multiline strings as one long string
 def oneliner(value, id=None):
 	return re.sub(" + ", " ", re.sub("[\r\n\t]", " ", value))
@@ -657,10 +812,10 @@ def is_listed(needle,heystack,flags=re.IGNORECASE+re.MULTILINE,id=None,debugval=
 	else: ns = oneliner(needle)
 	debug("%s(needle=\"%s\", heystack=\"%s\", id=%s)" % (sys._getframe().f_code.co_name, ns, hs, id), debugval+1, id=id)
 	try:
-		if not needle or not heystack or len(needle) < 1 or len(heystack) < 1: return (False, 0)
+		if not needle or not heystack or len(needle) < 1 or len(heystack) < 1: return (None, 0)
 	except:
-		return (False, 0)
-	tmp = None
+		return (None, 0)
+	tmp = False
 	loops = 0
 
 	if type(needle) is int: needle = [str(needle)]
@@ -702,10 +857,11 @@ def is_listed(needle,heystack,flags=re.IGNORECASE+re.MULTILINE,id=None,debugval=
 				if comment:
 					retval = comment.group()[3:-1]
 				return (retval, loops, n, tmp.group(), tmp.groupdict())
-	return (None, loops)
+	return (False, loops)
 
 ##############################################################################
-### Basic fileoperations (Usualy we don't need to care if it success or not)
+### Basic fileoperations and other tools (Usualy we don't need to care if it
+### success or not)
 # Checked 19.2.2017, - Semi
 def rm(file, id=None):
 	debug("rm(\"%s\")" % (file), LOG_DEBUG, id=id)
@@ -806,6 +962,25 @@ def makepid(fname):
 		debug("Couldn't create %s: %s" % (conf["main"]["pid"], tmp[1]), LOG_CRIT)
 		return False
 	return True
+
+# Remove duplicates from sequence
+# Checked 15.3.2017, - Semi
+def uniq(seq, idfun=None): 
+	## order preserving
+	if idfun is None:
+		def idfun(x): return x
+	seen = {}
+	result = []
+	for item in seq:
+		if item == None: continue
+		marker = idfun(item)
+		# in old Python versions:
+		# if seen.has_key(marker)
+		# but in new ones:
+		if marker in seen: continue
+		seen[marker] = 1
+		result.append(item)
+	return result
 
 ##############################################################################
 ###
@@ -929,12 +1104,11 @@ class SpamMilter(Milter.Milter):
 
 		if len(self.mail["header"]) == 0:
 			self.mail["size"] = 0
-			self.mail["subject"] = ""
-#			self.mail["header"]["raw"] = "%s: %s\n" % (field, value)
+			self.mail["subject"] = {}
+			self.mail["header"]["raw"] = ""
 			if self.tmp:
 				self.tmp.write("From %s %s\n" % (self.mail["from"][0], time.ctime()))
 		else:
-#			self.mail["header"]["raw"] += "%s: %s\n" % (field, value)
 			if self.tmp:
 				self.tmp.write("%s: %s\n" % (field, value))
 
@@ -946,6 +1120,7 @@ class SpamMilter(Milter.Milter):
 			oneline_value = oneliner(value, id=self.id).strip()
 
 			if self.mail["header"].has_key(field) and lfield not in [ "subject", "received" ]:
+				if self.mail["header"][field] == oneline_value: break
 				if type(self.mail["header"][field]) is not list:
 					tmp = self.mail["header"][field]
 					del self.mail["header"][field]
@@ -954,22 +1129,18 @@ class SpamMilter(Milter.Milter):
 			elif lfield not in [ "received" ]:
 				self.mail["header"][field] = oneline_value
 
-			if lfield == "subject":
-				self.mail["subject"] = value
-			# /subject
-				break
-
 			if lfield == "received":
-				recstr="(from (?P<helo>\S+) \((((?P<dns>\S+) )?\[((?P<ip>[\d\.]+)|ipv6:(?P<ipv6>[\w\d:]+))\]|[\w\d, ]+)\) )?by (?P<by>\S+)( \([\S ]+\))?( with (?P<proto>\S+))?( id (?P<id>\S+))?( for <(?P<for>\S+)>)?( \([\S ]+\))?; (?P<date>.+)"
+				recstr="(from (?P<helo>\S+) \((((?P<dns>\S+) )?\[((?P<ip>[\d\.]+)|ipv6:(?P<ipv6>[\w\d:]+))\]|[\w\d, ]+)\) )?(using .+ )?by (?P<by>\S+)( \([\S ]+\))?( with (?P<proto>\S+( [\d\.]+)?))?( id (?P<id>\S+))?( for <(?P<for>\S+)>)?( \([\S ]+\))?; (?P<date>.+)"
 				a = re.compile(recstr).match(oneline_value.lower())
 
 				if not a:
-					debug("Can't parse received: %s" % (oneline_value.lower()), LOG_NOTICE, id=self.id)
+					debug("Can't parse received: %s" % (oneline_value.lower()), LOG_INFO, id=self.id)
 					break
 				b={k: v for k, v in a.groupdict().items() if v}
 
 				# Do not add received line if host is localhost or inside (any) private network
 				# We have no need to follow internal relaying?
+#				if (b.has_key("ip") and islocal(b["ip"])): break
 				if (b.has_key("ip") and isprivate(b["ip"])) or (b.has_key("dns") and isprivate(b["dns"])): break
 
 				# Populate mail data with received host information
@@ -980,6 +1151,14 @@ class SpamMilter(Milter.Milter):
 
 			# /received
 				break
+
+			self.mail["header"]["raw"] += "%s: %s\n" % (field, oneline_value)
+
+			if lfield == "subject":
+				self.mail["subject"]["raw"] = oneline_value
+			# /subject
+				break
+
 # NOTE! Don't remove this last break, without this we are in infinite loop :)
 		# /while 1
 			break
@@ -997,6 +1176,10 @@ class SpamMilter(Milter.Milter):
 		if conf["main"]["timeme"] and self.mail["timer"].has_key("smtp_header"):
 			self.mail["timer"]["smtp_headers"] = str("%.4f") % timeme(self.mail["timer"]["smtp_header"])
 			del self.mail["timer"]["smtp_header"]
+
+# Create ip-from-to strings
+		makeipfromto(self.mail)
+
 		return CONTINUE
 
 	def body(self,chunk):
@@ -1076,24 +1259,23 @@ class SpamMilter(Milter.Milter):
 # End eom() timer here
 		if conf["main"]["timeme"]: self.mail["timer"]["smtp_"+sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 
-		subchar = []
-		try:
+#		try:
+		if 1:
 			if self.tmp:
 				self.tmp.seek(0)
 				msg = message_from_file(self.tmp)
-#				(subj, subchar) = decode_header(msg["subject"])[0]
-#				print subchar, subj
-#				print show_vars(msg["subject"])
-#				print show_vars(dir(msg))
-#				self.mail["subject"] = oneliner(stripUnprintable(subj), id=self.id)
-#				self.mail["rawsubject"] = oneliner(stripUnprintable(msg["subject"]), id=self.id)
 #				self.mail["raw"] = """%s""" % msg
+				(self.mail["subject"]["txt"], subchar) = decode_header(msg["subject"])[0]
+				charset = msg.get_charsets()
+				if subchar: charset.append(subchar)
+				self.mail["charset"]=uniq(charset)
+
 #				self.mail["mime"] = mimepart(msg, id=self.id)
-#				charset = msg.get_charsets()
-#				charset.append(subchar)
-#				self.mail["charset"]=uniq(charset)
-		except:
-			debug("eom() EXCEPTION: %s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR, id=self.id, trace=False)
+#				print show_vars(self.mail["mime"])
+#				print show_vars(dir(msg))
+#				print show_vars(msg)
+#		except:
+#			debug("eom() EXCEPTION: %s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR, id=self.id, trace=False)
 			try:
 				if self.tmp: self.tmp.close()
 			except:
@@ -1116,8 +1298,9 @@ class SpamMilter(Milter.Milter):
 		self.mail["action"] = []
 		self.mail["tests_done"] = []
 		for test in tests:
-			try:
-				(ret, self.mail) = eval("test_"+test)(self.mail)
+##			try:
+			if 1:
+				ret = eval("test_"+test)(self.mail)
 				self.mail["tests_done"].append(test)
 				if ret and type(ret) is bool:
 					if conf["actions"].has_key(test): ret = conf["actions"][test]
@@ -1125,9 +1308,8 @@ class SpamMilter(Milter.Milter):
 					else: ret = "flag"
 				self.mail["result"][test] = ret
 				if ret and ret[0]:
-					print ret[0][-1]
-					print ret[0][1]
-					if (ret[0][-1] in ['-']) or (ret[0][1] in ['-']):
+					print ret
+					if (ret[0][0] in ['-']) or (ret[0][-1] in ['-']):
 						print "Marker found"
 						debug("\t\tflag with - ... keep testing", LOG_DEBUG, id=self.id)
 						continue
@@ -1136,15 +1318,13 @@ class SpamMilter(Milter.Milter):
 #						break
 #					if ret and ret[0].lower() in ['authmx', 'skip', 'break']:
 #						self.mail["action"].insert(0, ret[0].lower())
-			except SystemExit, extlvl:
-				break
-				sys.exit(extlvl)
-			except:
-				debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR, id=self.id)
-			continue
+##			except SystemExit, extlvl:
+##				break
+##				sys.exit(extlvl)
+##			except:
+##				debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR, id=self.id)
+##			continue
 
-		del self.mail["raw"]
-#	 	print show_vars(self.mail)
 ###
 ### Tests done, now we should know what to do
 ###
@@ -1168,8 +1348,14 @@ class SpamMilter(Milter.Milter):
 
 		if conf["main"]["timeme"]: self.mail["timer"]["passthru"] = str("%.4f") % timeme(self.mail["timer"]["passthru"])
 # Timing information
-		print "Timer:", show_vars(self.mail["timer"])
-		print "Result:", show_vars(self.mail["result"])
+#		print "Timer:", show_vars(self.mail["timer"])
+#		print "Result:", show_vars(self.mail["result"])
+		del self.mail["raw"]
+		del self.mail["header"]["raw"]
+		del self.mail["ipfromto"]["raw"]
+		if conf["runtime"]["args"]["showmail"]:
+			print "mail:",
+			print show_vars(self.mail)
 		return CONTINUE
 
 ##############################################################################
@@ -1177,13 +1363,14 @@ class SpamMilter(Milter.Milter):
 ### Define tests
 ###
 def test_connect(mail):
+# Rework
 	if conf["main"]["timeme"]: timer = timeme()
 	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
 
 	res = None
 	seen = []
 	loops = 0
-	if mail["received"][1]["ip"] == "127.0.0.1": # or mail["received"][1]["ip"] == mail["my"]["ip"]:
+	if islocal(mail["received"][1]["ip"]):
 		debug("\tSender is local (me)", LOG_DEBUG, id=mail["id"])
 		loops += 1
 	else:
@@ -1214,9 +1401,10 @@ def test_connect(mail):
 #			break
 
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
-	return (res, mail)
+	return res
 
 def test_helo(mail):
+# Rework
 	if conf["main"]["timeme"]: timer = timeme()
 	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
 
@@ -1228,43 +1416,90 @@ def test_helo(mail):
 			if val not in seen:
 				seen.append(val)
 				debug("\tHelo %s" % (val), LOG_INFO, id=mail["id"])
-				res = is_listed(val, conf["rules"]["helo"], id=mail["id"])
+				res = is_listed(conf["rules"]["helo"], val, id=mail["id"])
+		break
+
+#	for rec in mail["received"]:
+#		if mail["received"][rec].has_key("helo"):
+#			helo = mail["received"][rec]["helo"]
+#			mail["tests"]["helo"] += 1
+#			debug("\thelo = %s" % (helo), LOG_INFO, id=mail["id"])
+#
+#			if helo == mail["my"]["ip"]:
+#				debug("\t\tFound: %s = %s (my ip)" % (helo, mail["my"]["ip"]), LOG_DEBUG, id=mail["id
+#				res = (True, "My IP")
+#			elif mail["my"].has_key("dns") and helo == mail["my"]["dns"]:
+#				debug("\t\tFound: %s = my dns" % (helo), LOG_DEBUG, id=mail["id"])
+#				res = ("Warn", "My DNS")
+#			elif mail.has_key("todomain") and helo == mail["todomain"]:
+#				debug("\t\ttest_helo: %s = todomain" % (helo), LOG_DEBUG, id=mail["id"])
+#				res = ("Warn", "Rcpt Domain")
+#			else:
+#				res = is_listed(helo, conf["rules"]["helo"], id=mail["id"])
+#			if res:
+#				break
+
 
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
-	return (res, mail)
+	return res
 
-def test_headers(mail):
+# Checked 15.3.2017, - Semi
+def test_accept(mail):
+	if conf["main"]["timeme"]: timer = timeme()
+	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+	res = is_listed(show_vars(conf["rules"]["accept"]), mail["ipfromto"]["raw"], id=mail["id"])
+	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
+	return res
+
+# Checked 15.3.2017, - Semi
+def test_block(mail):
+	if conf["main"]["timeme"]: timer = timeme()
+	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+	res = is_listed(show_vars(conf["rules"]["block"]), mail["ipfromto"]["raw"], id=mail["id"])
+	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
+	return res
+
+# Checked 15.3.2017, - Semi
+def test_ipfromto(mail):
+	if conf["main"]["timeme"]: timer = timeme()
+	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+	res = is_listed(show_vars(conf["rules"]["ipfromto"]), mail["ipfromto"]["raw"], id=mail["id"])
+	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
+	return res
+
+# Checked 15.3.2017, - Semi
+def test_samefromto(mail):
 	if conf["main"]["timeme"]: timer = timeme()
 	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
 
-	res = None
-	loops=0
-# 0.05s
-	mail["header"]["raw"] = ""
-	for a in mail["header"]:
-		if a in ["raw"]: continue
-		if type(mail["header"][a]) is list:
-			for b in mail["header"][a]:
-				mail["header"]["raw"] += "%s: %s\n" % (a, b)
-		else:
-			mail["header"]["raw"] += "%s: %s\n" % (a, mail["header"][a])
-
-	res = is_listed(conf["rules"]["headers"], mail["header"]["raw"], id=mail["id"])
-
-#	 for a in mail["header"]:
-#		 if type(mail["header"][a]) is list:
-#			 for b in mail["header"][a]:
-#				 res = is_listed(conf["rules"]["headers"], "%s: %s" % (a, b), id=mail["id"])
-#				 if res: loops += res[1]
-#				 if res and res[0]: break
-#		 else:
-#			 res = is_listed(conf["rules"]["headers"], "%s: %s" % (a, mail["header"][a]), id=mail["id"])
-#			 if res: loops += res[1]
-#		 if res and res[0]: break
-#	return ((res[0], loops), mail)
+	if isprivate(mail["received"][1]["ip"]): return None
+	if mail["from"] == mail["to"]: return True
 
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
-	return (res, mail)
+	return (False, 1)
+
+def test_dyndns(mail):
+	if conf["main"]["timeme"]: timer = timeme()
+	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+
+	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
+	return None
+
+def test_rbl(mail):
+	if conf["main"]["timeme"]: timer = timeme()
+	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+
+	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
+	return None
+
+
+# Checked 15.3.2017, - Semi
+def test_headers(mail):
+	if conf["main"]["timeme"]: timer = timeme()
+	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+	res = is_listed(conf["rules"]["headers"], mail["header"]["raw"], id=mail["id"])
+	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
+	return res
 
 def test_wordscan(mail):
 	if conf["main"]["timeme"]: timer = timeme()
@@ -1285,63 +1520,46 @@ def test_wordscan(mail):
 	else:
 		debug("\tMail does not have 'raw' part", LOG_INFO, id=mail["id"])
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
-	return (res, mail)
-
-def test_dyndns(mail):
-	if conf["main"]["timeme"]: timer = timeme()
-	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
-
-	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
-	return (None, mail)
-
-def test_rbl(mail):
-	if conf["main"]["timeme"]: timer = timeme()
-	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
-
-	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
-	return (None, mail)
-
-def test_accept(mail):
-	if conf["main"]["timeme"]: timer = timeme()
-	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
-
-	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
-	return (None, mail)
-
-def test_block(mail):
-	if conf["main"]["timeme"]: timer = timeme()
-	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
-
-	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
-	return (None, mail)
-
-def test_samefromto(mail):
-	if conf["main"]["timeme"]: timer = timeme()
-	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
-
-	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
-	return (None, mail)
-
-def test_ipfromto(mail):
-	if conf["main"]["timeme"]: timer = timeme()
-	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
-
-	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
-	return (None, mail)
+	return res
 
 def test_crc(mail):
 	if conf["main"]["timeme"]: timer = timeme()
 	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
 
+	print mail["checksum"]
+
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
-#	return (["flag", "Blacklisted IP"], mail)
-	return (None, mail)
+	return None
+
+def test_charset(mail):
+	if conf["main"]["timeme"]: timer = timeme()
+	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+
+	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
+	return None
+
+def test_bayesian(mail):
+	if conf["main"]["timeme"]: timer = timeme()
+	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+
+	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
+#	return ["flag", "Blacklisted IP"]
+	return None
 
 ##############################################################################
 ###
 ### Class for "manual" testing
 ###
 class test:
+#
+# Variables needed in .var file
+# "id" - ID Integer for message
+# "received[1]" - First received entry. Needed to simulate 'connection' and 'helo'
+# "from" for smtp 'mail from' command
+# "to" for 'rcpt to' recipients
+# "raw" as raw mail to get header and body data from
+# "headers/raw" If body and headers are separated
+#
 	def __init__(self, file, verbose = None):
 		if file.find(".") > 0:
 			file=file[0:file.rfind(".")]
@@ -1361,13 +1579,16 @@ class test:
 
 		# Load mail from file with variables
 		self.mail = maildef()
-		self.mail = load_vars(file)
+		conf["runtime"]["nodebug"] = True
+		self.mail = load_mailvar(file)
+		conf["runtime"]["nodebug"] = False
 
 		# Open temp file and write raw message into it
-
-## What should we do, if file does not have 'raw' entry? Is that possible?
 		if self.mail.has_key("raw") and self.mail["raw"]:
 			self.tmp = open("%s.tmp" % (file), "w+b")
+			if self.mail.has_key("header") and self.mail["header"].has_key("raw"):
+				self.tmp.write(self.mail["header"]["raw"])
+				self.tmp.write("\n\n")
 			self.tmp.write(self.mail["raw"])
 			self.tmp.close()
 
@@ -1407,6 +1628,7 @@ class test:
 			m.envrcpt("<%s>" % self.mail["to"])
 		self.tmp.seek(0)
 		oline=""
+
 		while 1:
 			line=self.tmp.readline()
 			if line[0:5] == "From ": continue
@@ -1436,9 +1658,9 @@ class test:
 			self.tmp.close()
 			rm(self.tmp.name)
 
-		if conf["runtime"]["args"]["showmail"]:
-			print "m.mail:",
-			print show_vars(m.mail)
+#		if conf["runtime"]["args"]["showmail"]:
+#			print "mail:",
+#			print show_vars(m.mail)
 # "Client" data, this is message to be filtered (should be considered as 'read-only')
 #			tmp = self.mail
 #			del tmp["raw"]
@@ -1521,6 +1743,7 @@ def Tconfig(childname=None, silent=None):
 ##############################################################################
 ### Main Functions
 def debug(args=None, level=LOG_DEBUG, id=None, trace=None, verb=None):
+	if conf["runtime"]["nodebug"]: return
 	show = conf["runtime"]["args"]["debug"]
 	if conf["runtime"]["args"]["v"]:
 		show += conf["runtime"]["args"]["v"]

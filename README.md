@@ -3,6 +3,17 @@ Semi's Spam Milter (sendmail/postfix filter)
 
 *** THIS IS WORK IN PROGRESS ***
 
+*** NOTICE *** NOTICE *** NOTICE *** NOTICE *** NOTICE *** NOTICE 
+
+Current version in github is NOT WORKING VERSION! This is development
+version if new code.  If you want to look about working version, please
+download old version from sourceforge or launchpad.
+
+Our goal is to release first working versions as soon as possible, but I
+have quite limited time to code.
+
+*** NOTICE *** NOTICE *** NOTICE *** NOTICE *** NOTICE *** NOTICE 
+
 My old Sspamm is really old, first version was released back in 2004.
 Because I haven't heared that anyone is using it, I haven't done so much
 releases for public.

@@ -116,9 +116,8 @@ confdefaults = {
 	"actions": {
 		"connect":		"Flag",
 		"helo":			"Flag",
-		"accept":		"Accept",
-		"block":		"Reject",
 		"samefromto":		"Flag",
+		"ipfromtopre":		"Flag",
 		"ipfromto":		"Flag",
 		"headers":		"Flag",
 		"dyndns":		"Flag",
@@ -136,8 +135,7 @@ confdefaults = {
 		"hide":			[],
 		"connect":		["(?#ignore)(127.0.0.1)"],
 		"helo":			[],
-		"accept":		[],
-		"block":		[],
+		"ipfromtopre":		[],
 		"ipfromto":		[],
 		"headers":		[],
 		"charset":		[],
@@ -381,10 +379,8 @@ def load_config(file):
 			if s in ["rules"]:
 				if 0:
 					pass
-				elif o in ["accept", "block", "ipfromto"]:
-					if o == "accept":
-#						print show_vars(conf[s][o])
-						pass
+				elif o in ["ipfromtopre", "ipfromto"]:
+					pass
 				elif o in ["subject", "blockwords", "blockhtml"]:
 					pass
 				elif o in ["hide"]:
@@ -452,18 +448,18 @@ def save_vars(var, fname, id=None):
 # Checked 19.2.2017, - Semi - NOTE!
 def load_mailvar(fname, id=None):
 	debug("load_mailvar(\"%s\")" % (fname), LOG_DEBUG, id=id)
-	is_raw = False
-	raw = None
 	do_skip = False
-	line_cont = False
-	do_show = False
+	is_raw = False
+	wasrec = False
+
 	name = None
 	hname = None
 
-	var_work = "{\n"
+	var_work = ""
+	var_rec = ""
 	var_raw = ""
 	var_hraw = ""
-	var_rec = ""
+# We really should have better parser here! I know, this is quite lame
 	with open(fname, "r") as fp:
 		for line in fp:
 			n = len(line)
@@ -485,6 +481,9 @@ def load_mailvar(fname, id=None):
 
 				res = is_listed("^\W[\)\]}],|^\}", line)
 				if res and res[0]:
+					if wasrec:
+						var_rec += line
+						wasrec=False
 					do_skip = False
 					if name in ["id", "from", "to", "my"]:
 						var_work += line
@@ -493,6 +492,8 @@ def load_mailvar(fname, id=None):
 
 			if name in ["received"]:
 				var_rec += line
+				wasrec=True
+				continue
 
 			if name in ["header"]:
 				res = is_listed("^\W+\"(?P<name>[\w-]+)\":", line)
@@ -510,8 +511,9 @@ def load_mailvar(fname, id=None):
 				var_raw += line
 
 	fp.close()
-	vars = eval(var_work)
-	var_tmp = eval("{\n%s\n\t}\n}" % var_rec)
+	vars = eval("{\n%s\n}" % (var_work))
+	var_tmp = eval("{\n%s\n}" % (var_rec))
+
 	vars["received"] = {}
 	vars["received"][1] = var_tmp["received"][1]
 	if var_hraw:
@@ -741,7 +743,7 @@ def makeipfromto(mail):
 #				mail["ipfromto"].append(tmp)
 
 #	print show_vars(mail["ipfromto"])
-	return 
+	return
 
 def strcleanup(str, id=None):
 	if conf["main"]["timeme"] is True: timer = timeme()
@@ -756,7 +758,7 @@ def strcleanup(str, id=None):
 
 	str = re.sub("&gt;|&#62;|&#x3E;", ">", str)		#>
 	str = re.sub("&lt;|&#60;|&#x3C;", "<", str)		#<
-	str = re.sub("&nbsp;|&#160;|&#xA0;", " ", str)		# 
+	str = re.sub("&nbsp;|&#160;|&#xA0;", " ", str)		#
 	str = re.sub(" ?(&euro;|&#8364;)", "€", str)		#€
 	str = re.sub("&copy;|&#169;|&#xA9;", "(c)", str)	#(c)
 	str = re.sub("&ndash;|&hypen;", "-", str)		#-
@@ -965,7 +967,7 @@ def makepid(fname):
 
 # Remove duplicates from sequence
 # Checked 15.3.2017, - Semi
-def uniq(seq, idfun=None): 
+def uniq(seq, idfun=None):
 	## order preserving
 	if idfun is None:
 		def idfun(x): return x
@@ -1166,7 +1168,7 @@ class SpamMilter(Milter.Milter):
 
 	def eoh(self):
 		debug("SpamMilter.eoh()", LOG_DEBUG, id=self.id)
-## Received fix was here. Also it would be safe to do accept, block, ipfromto, dyndns, rbl, headers test here.
+## Received fix was here. Also it would be safe to do ipfromtopre, ipfromto, dyndns, rbl, headers test here.
 
 # Do PTR DNS requests
 		for val in self.mail["received"]:
@@ -1223,24 +1225,26 @@ class SpamMilter(Milter.Milter):
 ### What if Domain (not) found from filtered list
 		tests = None
 		rules = None
+		self.mail["todomain"] = self.mail["to"][0].split("@")[1]
 		try:
-			self.mail["todomain"] = self.mail["to"][0].split("@")[1]
-			debug("Checking for filtered domains", LOG_DEBUG, id=self.id)
-			for a in conf["filter"]["domains"]:
-				if is_listed(a[0], self.mail["todomain"], id=self.mail["id"]):
-					tests=a[1]
-					break
+			if conf["runtime"]["args"]["tests"]:
+				tests=conf["runtime"]["args"]["tests"][0].split(',')
+			else:
+				debug("Checking for filtered domains", LOG_DEBUG, id=self.id)
+				for a in conf["filter"]["domains"]:
+					if is_listed(a[0], self.mail["todomain"], id=self.mail["id"]):
+						tests=a[1]
+						break
 
-			debug("Looking for domain \"%s\" rules" % (a[0]), LOG_DEBUG, id=self.id)
+			debug("Looking for domain rules", LOG_DEBUG, id=self.id)
 			for a in conf["filter"]["rules"]:
 				if is_listed(a[0], self.mail["todomain"], id=self.mail["id"]):
 					rules=a[1]
 					break
 		except:
-			todomain = self.mail["todomain"]
-			domains = conf["filter"]["domains"]
 			debug("FAILED %s(): Check if recipient domain configured for filtering" % (sys._getframe().f_code.co_name), LOG_ERR, id=self.mail["id"])
 			debug("EXCEPTION: %s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR, id=self.id)
+			# EMERGENCY EXIT HERE?
 
 		if not tests:
 			debug("\tskip, not filtered domain", LOG_DEBUG, id=self.id)
@@ -1297,33 +1301,36 @@ class SpamMilter(Milter.Milter):
 		self.mail["result"] = {}
 		self.mail["action"] = []
 		self.mail["tests_done"] = []
+
 		for test in tests:
-##			try:
-			if 1:
-				ret = eval("test_"+test)(self.mail)
-				self.mail["tests_done"].append(test)
-				if ret and type(ret) is bool:
+			if not globals().has_key("test_"+test):
+				debug("Test function test_%s does not exist" % (test), LOG_ERR, id=self.id)
+				continue
+
+			ret = eval("test_"+test)(self.mail)
+			self.mail["tests_done"].append(test)
+			if ret:
+				self.mail["result"][test] = ret
+				if type(ret) is bool:
 					if conf["actions"].has_key(test): ret = conf["actions"][test]
 # This is our 'master default' for any match
-					else: ret = "flag"
-				self.mail["result"][test] = ret
-				if ret and ret[0]:
-					print ret
+					else: ret = ("flag")
+				if ret[0]:
+					action=ret[0].lower()
+					if ret[2]: ret_regex=ret[2]
+					else: ret_regex = None
+					if ret[3]: ret_match=ret[3]
+					else: ret_match = None
+					if action in ['break']: continue
 					if (ret[0][0] in ['-']) or (ret[0][-1] in ['-']):
 						print "Marker found"
 						debug("\t\tflag with - ... keep testing", LOG_DEBUG, id=self.id)
 						continue
-#					if ret and (ret[0].lower() in ['flag', 'reject', 'delete', 'block', 'discard', 'accept', 'ignore']):
-#						debug("Testing hit found, break testing", LOG_DEBUG, id=self.id)
-#						break
-#					if ret and ret[0].lower() in ['authmx', 'skip', 'break']:
-#						self.mail["action"].insert(0, ret[0].lower())
-##			except SystemExit, extlvl:
-##				break
-##				sys.exit(extlvl)
-##			except:
-##				debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR, id=self.id)
-##			continue
+#				if ret and (ret[0].lower() in ['flag', 'reject', 'delete', 'block', 'discard', 'accept', 'ignore']):
+#					debug("Testing hit found, break testing", LOG_DEBUG, id=self.id)
+#					break
+#				if ret and ret[0].lower() in ['authmx', 'skip', 'break']:
+#					self.mail["action"].insert(0, ret[0].lower())
 
 ###
 ### Tests done, now we should know what to do
@@ -1362,6 +1369,7 @@ class SpamMilter(Milter.Milter):
 ###
 ### Define tests
 ###
+# Checked 17.3.2017, - Semi
 def test_connect(mail):
 # Rework
 	if conf["main"]["timeme"]: timer = timeme()
@@ -1375,25 +1383,28 @@ def test_connect(mail):
 		loops += 1
 	else:
 		for rec in mail["received"]:
-#			print show_vars(mail["received"][rec])
 			if not res and mail["received"][rec].has_key("ip"):
 				val = mail["received"][rec]["ip"]
 				if val not in seen:
 					seen.append(val)
 					debug("\tConnect from %s" % (val), LOG_INFO, id=mail["id"])
 					res = is_listed(conf["rules"]["connect"], val, id=mail["id"])
+# Note! Reverse DNS should not be trusted, I have seen that people assign 'localhost' for IP.
+# If there is "localhost" as accepted in connect rules, they will get past this.
+# Maybe we should do reverse check? So IP and DNS matches.
 			if not res and mail["received"][rec].has_key("dns"):
 				val = mail["received"][rec]["dns"]
 				if val not in seen:
 					seen.append(val)
 					debug("\tConnect from %s (dns)" % (val), LOG_INFO, id=mail["id"])
 					res = is_listed(conf["rules"]["connect"], val, id=mail["id"])
-			if not res and mail["received"][rec].has_key("helo"):
-				val = mail["received"][rec]["helo"]
-				if val not in seen:
-					seen.append(val)
-					debug("\tConnect from %s (helo)" % (val), LOG_INFO, id=mail["id"])
-					res = is_listed(conf["rules"]["connect"], val, id=mail["id"])
+# I don't think that we should look if 'helo' is on connect rules
+#			if not res and mail["received"][rec].has_key("helo"):
+#				val = mail["received"][rec]["helo"]
+#				if val not in seen:
+#					seen.append(val)
+#					debug("\tConnect from %s (helo)" % (val), LOG_INFO, id=mail["id"])
+#					res = is_listed(conf["rules"]["connect"], val, id=mail["id"])
 			if res: loops += res[1]
 			if res and res[0]:
 				break
@@ -1403,6 +1414,7 @@ def test_connect(mail):
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 	return res
 
+# Checked 17.3.2017, - Semi
 def test_helo(mail):
 # Rework
 	if conf["main"]["timeme"]: timer = timeme()
@@ -1412,50 +1424,39 @@ def test_helo(mail):
 	seen = []
 	for rec in mail["received"]:
 		if not res and mail["received"][rec].has_key("helo"):
-			val = mail["received"][rec]["helo"]
-			if val not in seen:
-				seen.append(val)
-				debug("\tHelo %s" % (val), LOG_INFO, id=mail["id"])
-				res = is_listed(conf["rules"]["helo"], val, id=mail["id"])
+			helo = mail["received"][rec]["helo"]
+			if helo not in seen:
+				seen.append(helo)
+				debug("\tHelo %s" % (helo), LOG_INFO, id=mail["id"])
+			if mail.has_key("my"):
+# Is HELO My IP?
+				if mail["my"].has_key("ip") and helo == mail["my"]["ip"]:
+					debug("\t\t%s = %s (my ip)" % (helo, mail["my"]["ip"]), LOG_DEBUG, id=mail["id"])
+					res = True
+# Is HELO My DNS?
+				elif mail["my"].has_key("dns") and helo == mail["my"]["dns"]:
+					debug("\t\t%s = my dns" % (helo), LOG_DEBUG, id=mail["id"])
+					res = True
+# or is HELO domain name of recipient?
+				elif mail.has_key("todomain") and helo == mail["todomain"]:
+					debug("\t\t%s = todomain" % (helo), LOG_DEBUG, id=mail["id"])
+					res = True
+			if not res:
+				res = is_listed(conf["rules"]["helo"], helo, id=mail["id"])
+			if res:
+				break
+# Sorry, not recursive
 		break
 
-#	for rec in mail["received"]:
-#		if mail["received"][rec].has_key("helo"):
-#			helo = mail["received"][rec]["helo"]
-#			mail["tests"]["helo"] += 1
-#			debug("\thelo = %s" % (helo), LOG_INFO, id=mail["id"])
-#
-#			if helo == mail["my"]["ip"]:
-#				debug("\t\tFound: %s = %s (my ip)" % (helo, mail["my"]["ip"]), LOG_DEBUG, id=mail["id
-#				res = (True, "My IP")
-#			elif mail["my"].has_key("dns") and helo == mail["my"]["dns"]:
-#				debug("\t\tFound: %s = my dns" % (helo), LOG_DEBUG, id=mail["id"])
-#				res = ("Warn", "My DNS")
-#			elif mail.has_key("todomain") and helo == mail["todomain"]:
-#				debug("\t\ttest_helo: %s = todomain" % (helo), LOG_DEBUG, id=mail["id"])
-#				res = ("Warn", "Rcpt Domain")
-#			else:
-#				res = is_listed(helo, conf["rules"]["helo"], id=mail["id"])
-#			if res:
-#				break
-
-
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 	return res
 
 # Checked 15.3.2017, - Semi
-def test_accept(mail):
+def test_ipfromtopre(mail):
 	if conf["main"]["timeme"]: timer = timeme()
 	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
-	res = is_listed(show_vars(conf["rules"]["accept"]), mail["ipfromto"]["raw"], id=mail["id"])
-	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
-	return res
+	res = is_listed(show_vars(conf["rules"]["ipfromtopre"]), mail["ipfromto"]["raw"], id=mail["id"])
 
-# Checked 15.3.2017, - Semi
-def test_block(mail):
-	if conf["main"]["timeme"]: timer = timeme()
-	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
-	res = is_listed(show_vars(conf["rules"]["block"]), mail["ipfromto"]["raw"], id=mail["id"])
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 	return res
 
@@ -1482,12 +1483,16 @@ def test_dyndns(mail):
 	if conf["main"]["timeme"]: timer = timeme()
 	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
 
+	print "TODO: DynDNS scan should be done here"
+
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 	return None
 
 def test_rbl(mail):
 	if conf["main"]["timeme"]: timer = timeme()
 	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+
+	print "TODO: Blacklist scan should be done here"
 
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 	return None
@@ -1526,6 +1531,7 @@ def test_crc(mail):
 	if conf["main"]["timeme"]: timer = timeme()
 	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
 
+	print "TODO: Checksum scan should be done here"
 	print mail["checksum"]
 
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
@@ -1535,6 +1541,9 @@ def test_charset(mail):
 	if conf["main"]["timeme"]: timer = timeme()
 	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
 
+	print "TODO: Charset scan should be done here"
+	print mail["charset"]
+
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 	return None
 
@@ -1542,9 +1551,11 @@ def test_bayesian(mail):
 	if conf["main"]["timeme"]: timer = timeme()
 	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
 
+	print "TODO: Bayesian scan should be done here"
+	res = (None)
+
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
-#	return ["flag", "Blacklisted IP"]
-	return None
+	return res
 
 ##############################################################################
 ###
@@ -1602,6 +1613,7 @@ class test:
 		m = SpamMilter()
 
 		m.mail["id"] = self.mail["id"]
+		if self.mail.has_key("my"): m.mail["my"] = self.mail["my"]
 		m.id = m.mail["id"]
 		m.mail["tmpfile"] = "%08d.tmp" % (m.id)
 
@@ -1650,7 +1662,6 @@ class test:
 # Data
 			m.body(self.tmp.read(1024*1024*2))
 		# Now we have done everything as in 'online'
-# .
 		m.eom()
 # Close
 		m.close()
@@ -1841,6 +1852,7 @@ if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description='Semi\'s Spam Milter.')
 	parser.add_argument('--ver', '-V', help='show version', action='version', version='%s v%s' % (__prog__, __version__))
 	parser.add_argument('--conf', '-c', help='configuration file location', action='store', nargs=1)
+	parser.add_argument('--test', '-t', help='tests to run, like: helo,ipfromto', action='store', nargs=1, dest='tests')
 	parser.add_argument('--showpid', '-sp', help='show location of pid file', action='store_true', dest='showpid')
 	parser.add_argument('--showconf', '-sc', help='show configuration dump', action='store_true', dest='showconf')
 	parser.add_argument('--showmail', '-sm', help='dump debug data after mail processing', action='store_true', dest='showmail')

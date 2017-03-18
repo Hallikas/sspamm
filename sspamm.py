@@ -30,6 +30,7 @@ from email import message_from_file, message_from_string
 from email.Header import decode_header
 
 from string import maketrans, letters, digits, punctuation, whitespace
+from string import split, join
 
 import formatter, htmllib
 
@@ -164,6 +165,16 @@ conf["runtime"] = {
 		"unsure":	0,
 		"spam":		0,
 	},
+}
+
+# For CRC
+msgtemplate = {
+	'firstseen': 0,
+	'lastseen': 0,
+	'seen': 0,
+	'block': 0,
+	'pass': 0,
+	'flag': 0,
 }
 
 # Data types of options:
@@ -353,7 +364,13 @@ def load_config(file):
 				conf[s][o] = config_variables(cp.get(s,o))
 # If variable is filename or path, does it need sspammdir prefix?
 				if o in ["pid", "logfile", "savedir", "tmpdir", "crcfile", "rrdfile"]:
-					if conf[s][o] and conf[s][o][0] not in ["/", "."]: conf[s][o] = "%s/%s" % (conf["main"]["sspammdir"], conf[s][o])
+					conf[s][o] = cp.get(s,o)
+					if conf[s][o].rfind("%") > -1:
+						conf[s][o] = config_variables(conf[s][o])
+					elif conf[s][o][0] not in ["/", "."]:
+						conf[s][o] = config_variables("%s/%s" % (conf["main"]["sspammdir"], conf[s][o]))
+				else:
+					conf[s][o] = config_variables(cp.get(s,o))
 			else:
 				conf[s][o] = cp.get(s,o)
 
@@ -428,9 +445,9 @@ def config_variables(t):
 	t = re.sub("%n", conf["main"]["name"], t)
 	t = re.sub("%h", conf["runtime"]["hostname"], t)
 	if conf["main"].has_key("sspammdir") and conf["main"]["sspammdir"]:
-		t = re.sub("%s", conf["main"]["sspammdir"], t)
+		t = re.sub("^.*%s", conf["main"]["sspammdir"], t)
 	if conf["runtime"].has_key("confpath") and conf["runtime"]["confpath"]:
-		t = re.sub("%c", conf["runtime"]["confpath"], t)
+		t = re.sub("^.*%c", conf["runtime"]["confpath"], t)
 	return t
 
 
@@ -441,6 +458,7 @@ def save_vars(var, fname, id=None):
 	debug("save_vars(\"%s\")" % (fname), LOG_DEBUG, id=id)
 	fp = open(fname, "w+b")
 	if fp: fp.write(show_vars(var))
+	if fp: fp.write("\n")
 	fp.close()
 	return
 
@@ -461,6 +479,7 @@ def load_mailvar(fname, id=None):
 	var_hraw = ""
 # We really should have better parser here! I know, this is quite lame
 	with open(fname, "r") as fp:
+		i=0
 		for line in fp:
 			n = len(line)
 			if n > 80: n=80
@@ -487,6 +506,7 @@ def load_mailvar(fname, id=None):
 					do_skip = False
 					if name in ["id", "from", "to", "my"]:
 						var_work += line
+						name = None
 						continue
 					name = None
 
@@ -582,9 +602,40 @@ def show_vars(var, lvl=0):
 		st += str(var)
 	return st
 
+#
+def load_vars(fname, id=None):
+	debug("load_vars(\"%s\")" % (fname), LOG_DEBUG, id=id)
+	fp = open(fname, "r")
+	is_raw = False
+	raw = None
+	do_skip = False
+	buf = ""
+	while 1:
+		line = fp.readline()
+		if len(line) < 1: break
+		if line[1:10] == "\"mime\": {":
+			do_skip = True
+		if line[1:13] == "\"raw\": 'From":
+			raw = line[9:]
+			is_raw = True
+		elif is_raw:
+			if line == "',\n":
+				is_raw = False
+			else:
+				raw += line
+		elif do_skip:
+			if line[1:3] == "},":
+				do_skip = False
+			pass
+		else:
+			buf += line
+	fp.close()
+	vars = eval(buf)
+	if raw: vars["raw"] = raw
+	return vars
+
 ##############################################################################
 ### Custom tools
-
 class HTMLStripper(htmllib.HTMLParser):
 	def __init__(self):
 #		debug("HTMLStripper.__init__()", LOG_DEBUG)
@@ -1016,6 +1067,93 @@ class SpamMilter(Milter.Milter):
 			rm(self.tmp.name, id=self.id)
 		if not self.mail:
 			return
+
+		if conf["main"]["crcsave"] and self.mail.has_key("checksum"):
+			crc = self.mail["checksum"]
+			# New entry
+			if not msgbase.has_key(crc):
+				msgbase[crc] = msgtemplate.copy()
+				msgbase[crc]["firstseen"] = timeme()
+			msgbase[crc]["seen"] += 1
+			msgbase[crc]["lastseen"] = timeme()
+
+#			try:
+#				save_vars(msgbase, conf["main"]["crcfile"])
+#			except:
+# Saving CRC file failed
+#				debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR)
+
+#			if self.mail["action"][0] in ['reject','delete','discard','block']:
+#				msgbase[crc]['block'] += 1
+#			elif self.mail["action"][0] in ['flag','warn']:
+#				msgbase[crc]['flag'] += 1
+#			else:
+#				msgbase[crc]['pass'] += 1
+
+
+#				print "#############################################################################"
+#				print "Received:",
+#				for rec in self.mail["received"]:
+#					print "\n\t",
+#					if self.mail["received"][rec].has_key("dns"):
+#						print "%s" % (self.mail["received"][rec]["dns"]),
+#					print " [%s]" % (self.mail["received"][rec]["ip"]),
+#					if self.mail["received"][rec].has_key("helo"):
+#						print " (%s)" % (self.mail["received"][rec]["helo"]),
+#				print """
+#
+#ID:\t\t%s
+#Mail From:\t%s
+#From:\t\t%s
+#Rcpt To:\t%s
+#To:\t\t%s
+#Subject:\t%s
+#Size:\t\t%d
+#Checksum:\t%s""" % (
+#self.mail["id"],
+#self.mail["from"][0],
+#self.mail["header"]["From"],
+#self.mail["to"],
+#self.mail["header"]["To"],
+#self.mail["subject"][0:80],
+#self.mail["size"],
+#self.mail["checksum"]
+#)
+#				if conf["main"]["crcsave"]:
+#					print "\t\t", msgbase[self.mail["checksum"]]
+#				print
+#				tc = 0
+#				print "%s\t\t%s\t%s\t%s" % ("Test", "Time", "Tests", "Action and why")
+#				print "-----------------------------------------------------------------------------"
+#				for t in self.mail["tests"]:
+#					if self.mail["timer"].has_key(t):
+#						print "%-15s %s\t" % (t, self.mail["timer"][t]),
+#					else:
+#						print "%-15s %s\t" % ("", ""),
+#					print "%5d\t" % (self.mail["tests"][t]),
+#					tc += self.mail["tests"][t]
+#					if self.mail["result"].has_key(t):
+#						if self.mail["result"][t] != None:
+#							print "%s\t" % (self.mail["result"][t][0]),
+#							print "%s" % (oneliner(self.mail["result"][t][1][0:80])),
+#						else:
+#							print "",
+#					print
+#				print "-----------------------------------------------------------------------------"
+#				print "%s\t\t%s\t" % ("TOTAL:", self.mail["timer"]["timepass"]),
+#				print "%5d\t" % (tc),
+#				print "%s" % (self.mail["action"][0]),
+#				print
+#				print
+
+
+
+
+
+
+
+
+##		if not conf["main"]["childs"]: Tcrc()
 		if conf["main"]["timeme"]: self.mail["timer"]["SpamMilter_"+sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 		return
 
@@ -1139,6 +1277,8 @@ class SpamMilter(Milter.Milter):
 					debug("Can't parse received: %s" % (oneline_value.lower()), LOG_INFO, id=self.id)
 					break
 				b={k: v for k, v in a.groupdict().items() if v}
+				if b.has_key("dns") and b["dns"][-1] == ".":
+					b["dns"] = b["dns"][:-1]
 
 				# Do not add received line if host is localhost or inside (any) private network
 				# We have no need to follow internal relaying?
@@ -1468,35 +1608,124 @@ def test_ipfromto(mail):
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 	return res
 
-# Checked 15.3.2017, - Semi
-def test_samefromto(mail):
+# Checked 18.3.2017, - Semi
+def test_crc(mail):
 	if conf["main"]["timeme"]: timer = timeme()
 	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
+	if not conf["main"]["crcsave"] or not mail.has_key("checksum"): return None
 
-	if isprivate(mail["received"][1]["ip"]): return None
-	if mail["from"] == mail["to"]: return True
+# Todo: Configuration rule, crcremove. For regexp patterns to remove from
+# mail body before counting CRC, so email addresses and other 'variable'
+# data can be removed from mail.
+	if msgbase.has_key(mail["checksum"]):
+		debug("\t%s found from CRC base" % mail["checksum"], LOG_DEBUG, id=mail["id"])
+
+		crc=mail["checksum"]
+# Maybe this should be configurable?
+		if timeme(msgbase[crc]['lastseen']) < conf["main"]["crchours"]*60*60:
+# If mesage is BLOCKED more then FIVE times in CRCHOURS
+			if msgbase[crc]['block'] > 5:   res = ('flag', 1, ">5 block/%dh" % (conf["main"]["crchours"]))
+# If mesage is BLOCKED more then ONE times in CRCHOURS
+			elif msgbase[crc]['block'] > 1: res = ('flag', 1, ">1 block/%dh" % (conf["main"]["crchours"]))
+# If mesage is FLAGGED more then FIVE times in CRCHOURS
+			elif msgbase[crc]['flag'] > 5:  res = ('flag', 1, ">5 flag/%dh" % (conf["main"]["crchours"]))
+# If mesage is FLAGGED more then ONE times in CRCHOURS
+			elif msgbase[crc]['flag'] > 1:  res = ('flag', 1, ">1 flag/%dh" % (conf["main"]["crchours"]))
+		else:
+			debug("\t%s is older then %dh" % (crc, conf["main"]["crchours"]), LOG_DEBUG+1, id=mail["id"])
 
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
-	return (False, 1)
+	return None
 
 def test_dyndns(mail):
 	if conf["main"]["timeme"]: timer = timeme()
 	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
 
-	print "TODO: DynDNS scan should be done here"
+	for var in mail["received"]:
+		if mail["received"][var].has_key("dns"):
+			print mail["received"][var]["dns"]
+			res = is_listed(show_vars(conf["rules"]["dyndns"]), mail["received"][var]["dns"], id=mail["id"])
+			if res: break
 
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 	return None
 
 def test_rbl(mail):
+	global usedns
+
 	if conf["main"]["timeme"]: timer = timeme()
 	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
 
-	print "TODO: Blacklist scan should be done here"
+	if not usedns:
+		debug("NO DNS Module loaded", LOG_INFO, id=mail["id"])
+		return None
 
+#	DNS.defaults['timeout'] = 1
+#	if DNS.defaults['server'] == []: DNS.DiscoverNameServers()
+
+	res = None
+	failed = 0
+	seen = []
+	loops = 0
+
+#	print show_vars(mail["received"])
+	for var in mail["received"]:
+		if mail["received"][var].has_key("ip"):
+			if mail["received"][var]["ip"] in seen:
+				continue
+			debug("\t%s" % (mail["received"][var]["ip"]), LOG_DEBUG+1, id=mail["id"])
+			seen.append(mail["received"][var]["ip"])
+			a = split(mail["received"][var]["ip"], '.')
+			a.reverse()
+
+			if mail["received"][var].has_key("note"):
+				print "Note:",mail["received"][var]["note"]
+
+			for rbl in conf["settings"]["ipservers"]:
+				if rbl[0:3] == "(?#":
+					action = rbl[3:rbl.find(")")]
+					rblserver = rbl[rbl.find(")")+1:]
+				else:
+					action = conf["actions"]["rbl"]
+					rblserver = rbl
+				debug("\tRBL: %s (if match %s)" % (rblserver, action), LOG_DEBUG+1, id=mail["id"])
+				loops += 1
+				b=join(a, '.')+'.'+rblserver
+				try:
+					q = DNS.DnsRequest(b, qtype = 'A').req()
+					if q.header['status'] == "NOERROR":
+						debug("\t\tA %s" % (q.answers[0]['data']), LOG_DEBUG+1, id=mail["id"])
+						try:
+							q = DNS.DnsRequest(b, qtype = 'TXT').req()
+							if q.header['status'] == "NOERROR" and len(q.answers) > 0:
+								debug("\t\tTXT %s" % (q.answers[0]['data']), LOG_DEBUG+1, id=mail["id"])
+								res = (True, q.answers[0]['data'][0])
+						except:
+							pass
+						if not res:
+							debug("\t\tNo reason provided by TXT", LOG_DEBUG+1, id=mail["id"])
+							res = (True, "BLACKLISTED from %s" % (rbl))
+						break
+				except:
+## Reason for exception is usually timeout, ignore but report as debug information
+					debug("test_rbl exception (DNS query) - %s: %s" % (sys.exc_type, sys.exc_value), LOG_INFO)
+## If RBL was failed for some reason, wait for few seconds and continue after wait
+					if failed < 3:
+						time.sleep(1)
+					else:
+						self.mail["note"] = "DNS Failure for black list testing."
+						break
+					failed += 1
+### Break on first RBL match
+				if res: break
+			if res: break
+
+	print show_vars(mail["received"])
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
-	return None
-
+#	print res
+#	print loops
+#	sys.exit(1)
+	return res
 
 # Checked 15.3.2017, - Semi
 def test_headers(mail):
@@ -1527,22 +1756,27 @@ def test_wordscan(mail):
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 	return res
 
-def test_crc(mail):
+# Checked 15.3.2017, - Semi
+def test_samefromto(mail):
 	if conf["main"]["timeme"]: timer = timeme()
 	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
 
-	print "TODO: Checksum scan should be done here"
-	print mail["checksum"]
+	if isprivate(mail["received"][1]["ip"]): return None
+	if mail["from"] == mail["to"]: return True
 
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
-	return None
+	return (False, 1)
 
+# Checked 17.3.2017, - Semi
 def test_charset(mail):
 	if conf["main"]["timeme"]: timer = timeme()
 	debug("%s()" % (sys._getframe().f_code.co_name), LOG_DEBUG, id=mail["id"])
 
-	print "TODO: Charset scan should be done here"
-	print mail["charset"]
+	res = None
+	if mail.has_key("charset"):
+		for val in mail["charset"]:
+			res = is_listed(conf["rules"]["charset"], val, id=mail["id"])
+			if res: break
 
 	if conf["main"]["timeme"]: mail["timer"][sys._getframe().f_code.co_name] = str("%.4f") % timeme(timer)
 	return None
@@ -1730,6 +1964,11 @@ def Tconfig(childname=None, silent=None):
 				save_config(conf["runtime"]["conffile"])
 			conf["runtime"]["conftime"] = os.stat(conf["runtime"]["conffile"])[8]
 			conf["runtime"]["confpath"] = conf["runtime"]["conffile"][0:conf["runtime"]["conffile"].rfind("/")]
+
+			if conf["runtime"]["conffile"].rfind("/") < 0:
+				conf["runtime"]["confpath"] = "."
+			else:
+				conf["runtime"]["confpath"] = conf["runtime"]["conffile"][0:conf["runtime"]["conffile"].rfind("/")]
 			if childname: debug("Configuration %s reloaded" % (conf["runtime"]["conffile"]), LOG_INFO)
 			load_config(conf["runtime"]["conffile"])
 
@@ -1750,6 +1989,41 @@ def Tconfig(childname=None, silent=None):
 		time.sleep(1)
 	if childname: debug("Config thread quited", LOG_INFO)
 	return
+
+## Thread to keep CRC database clean
+def Tcrc(childname=None):
+	global msgbase
+	debug("Create CRC child thread", LOG_DEBUG)
+
+	expire = time.time()-(60*60*conf["main"]["crchours"])
+	while conf["runtime"]["endtime"] == 0:
+		if childname and not (conf["main"]["pid"] and os.path.exists(conf["main"]["pid"])): break
+### DO SOMETHING
+		if conf["main"]["crcsave"]:
+			tmpmb = {};
+## Keep messages seen in last 12 hours
+			for crc in msgbase:
+				if not (msgbase[crc]["seen"] < expire):
+					tmpmb[crc] = msgbase[crc].copy()
+
+			msgbase = tmpmb.copy()
+			tmpmb.clear()
+
+			if conf["runtime"]["offline"]:
+				save_vars(msgbase, conf["main"]["crcfile"])
+### / DO SOMETHING
+		if childname != "CRC" or not conf["main"]["childs"]: return
+## Loop every 10 minutes
+		if conf["main"]["crcsave"]:
+			time.sleep(600)
+		else:
+			time.sleep(5)
+	debug("CRC thread quited", LOG_INFO)
+	return
+### /CHILD THREADS
+
+
+
 
 ##############################################################################
 ### Main Functions
@@ -1792,11 +2066,6 @@ def show_framepath(f = None):
 def main():
 	global conf
 
-# Run child (thread) configuration
-	Tconfig()
-# Create PID or quit
-	if(not makepid(conf["main"]["pid"])): sys.exit(2)
-
 	if conf["main"]["childs"]:
 # No signal support while threaded
 		thread.start_new_thread(Tconfig,("Configuration Loader",))
@@ -1826,6 +2095,12 @@ def main():
 	Milter.set_flags(ADDRCPT + DELRCPT + ADDHDRS + CHGHDRS + CHGBODY)
 
 	debug("Spam Filter started", LOG_INFO)
+
+	if not usedns: debug("WARNING! DNS module not loaded, DNS functions (like RBL) disabled!", LOG_ALERT)
+##	if conf["main"]["childs"]:
+#		thread.start_new_thread(Tlogger,("Logger",))
+##		thread.start_new_thread(Tcrc,("CRC",))
+
 	try:
 		Milter.runmilter(conf["main"]["name"],conf["main"]["port"],300)
 	except SystemExit:
@@ -1880,6 +2155,29 @@ if __name__ == "__main__":
 	a=conf["runtime"]["args"]
 	if not conf["runtime"]["args"]["debug"]: conf["runtime"]["args"]["debug"] = LOG_NOTICE
 	Tconfig(silent=True)
+# Create PID or quit
+	if(not makepid(conf["main"]["pid"])): sys.exit(2)
+
+# CRC
+	if conf["main"]["crcsave"]:
+		if os.path.exists(conf["main"]["crcfile"]):
+			if os.access(conf["main"]["crcfile"], os.R_OK):
+				debug("Loading CRC database", LOG_NOTICE)
+				msgbase = load_vars(conf["main"]["crcfile"])
+			else:
+				debug("Error accessing CRC file %s" % (conf["main"]["crcfile"]), LOG_ERR)
+				conf["main"]["crcsave"] = False
+		else:
+			try:
+				msgbase = {}
+				msgbase["0"] = msgtemplate.copy()
+				save_vars(msgbase, conf["main"]["crcfile"])
+			except OSError, (errno, strerror):
+				if errno != 39: debug("%s" % sys.exc_value, LOG_ERR)
+				conf["main"]["crcsave"] = False
+			except:
+				debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR)
+				conf["main"]["crcsave"] = False
 
 	if a["showpid"]:
  		print conf["main"]["pid"]

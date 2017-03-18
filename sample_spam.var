@@ -1,5 +1,18 @@
 {
 	"id": 1,
+	"my": {
+		"ip": None,
+		"dns": None,
+	},
+	"received": {
+		1: {
+			"ip": '70.98.79.144',
+			"helo": 'nh5ww0mdf.flexablehosepro.top',
+			"dns": 'drlivewatch.com',
+		},
+	},
+	"from": ['customizedshavingkits@flexablehosepro.top'],
+	"to": ['semi@hallikas.com'],
 	"header": {
 		"raw": 'From customizedshavingkits@flexablehosepro.top Thu Jun 23 00:52:31 2016
 Received: from 013c5ed3.nh5ww0mdf.flexablehosepro.top (amavisd, port 10850)
@@ -15,14 +28,6 @@ MIME-Version: 1.0
 Date: Wed, 22 Jun 2016 14:56:06 -0700
 Content-Type: text/html; charset="UTF-8"',
 	},
-	"received": {
-		1: {
-			"ip": '70.98.79.144',
-			"helo": 'nh5ww0mdf.flexablehosepro.top',
-			"dns": 'drlivewatch.com',
-		},
-	},
-	"from": ['customizedshavingkits@flexablehosepro.top'],
 	"raw": '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
 <html>
 <head>
@@ -113,9 +118,4 @@ _+Customize your dad\'s shaving ritual from start to finish+_
 </body>
 
 ',
-	"to": ['semi@hallikas.com'],
-	"my": {
-		"ip": None,
-		"dns": None,
-	},
 }

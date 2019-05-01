@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# -*- coding: UTF-8 -*-
+# -*- coding: ISO-8859-15 -*-
 
 # Note, I will use d.m.yyyy format, that's 19 feb 2017 = 19.2.2017
 
@@ -1011,7 +1011,7 @@ def makepid(fname):
 		fp.write("%s\n" % os.getpid())
 		fp.close()
 	except:
-		return ("Error", sys.exc_value)
+##		return ("Error", sys.exc_value)
 		debug("Couldn't create %s: %s" % (conf["main"]["pid"], tmp[1]), LOG_CRIT)
 		return False
 	return True

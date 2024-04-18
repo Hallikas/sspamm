@@ -428,7 +428,7 @@ def config_load(file):
 	global conf
 
 	try:
-		conf = config_read(file);
+		conf = config_read(file)
 	except:
 		debug("CONFIG LOAD ERROR. %s: %s" % (sys.exc_type, sys.exc_value), LOG_CRIT)
 		print_exc(limit=None, file=sys.stderr)
@@ -470,7 +470,7 @@ def rmdir(path, id=None):
 def mkdir(path, id=None):
 	debug("mkdir(\"%s\")" % (path), LOG_DEBUG, id=id)
 	try:
-		os.makedirs(path, 0770)
+		os.makedirs(path, 0o770)
 	except OSError, (errno, strerror):
 		if errno != 17: debug("%s" % sys.exc_value, LOG_ERR)
 	except:
@@ -855,7 +855,7 @@ def is_filtered(mail):
 		debug("FAILED: is_filtered %s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR, id=mail["id"], trace=True)
 		mail["failed"] = "is_filtered(\"%s\"[0].split(\"@\")[1])" % (mail["to"])
 		if not conf["runtime"]["offline"]:
-			save_vars(mail, "/tmp/%08d.var" % (mail["id"]), id=mail["id"]);
+			save_vars(mail, "/tmp/%08d.var" % (mail["id"]), id=mail["id"])
 	if conf["main"]["timeme"] is True: mail["timer"]["is_filtered"] = str("%.4f") % timeme(timer, id=mail["id"])
 	return (found, mail)
 
@@ -1023,7 +1023,7 @@ def fix_received(mail):
 			if not conf["runtime"]["offline"]:
 # SEMI: This is so stupid, but save_vars says that 'self.mail' is not global
 				try:
-					if mail: save_vars(mail, "/tmp/%08d.var" % (mail["id"]), id=mail["id"]);
+					if mail: save_vars(mail, "/tmp/%08d.var" % (mail["id"]), id=mail["id"])
 				except:
 					debug("Exception in 'Is DNS entry ok' or 'Is hello ok'", LOG_ERR, id=mail["id"], trace=False)
 					pass
@@ -1683,10 +1683,7 @@ class SpamMilter(Milter.Milter):
 				else:
 					self.mail["header"]["To"] = ""
 			if conf["main"]["verbose"] == 6 or (conf["runtime"]["offline"] and conf["main"]["offline"] < 7):
-				print
-#				if conf["main"]["singleview"]:
-#					print(""),
-#				else:
+				print("")
 				print("#############################################################################")
 				print("Received:"),
 				for rec in self.mail["received"]:
@@ -1719,7 +1716,7 @@ self.mail["checksum"]
 ))
 				if conf["main"]["crcsave"]:
 					print("\t\t", msgbase[self.mail["checksum"]])
-				print
+				print("")
 				tc = 0
 				print("%s\t\t%s\t%s\t%s" % ("Test", "Time", "Tests", "Action and why"))
 				print("-----------------------------------------------------------------------------")
@@ -1736,13 +1733,13 @@ self.mail["checksum"]
 							print("%s" % (oneliner(self.mail["result"][t][1][0:80]))),
 						else:
 							print(""),
-					print
+					print("")
 				print("-----------------------------------------------------------------------------")
 				print("%s\t\t%s\t" % ("TOTAL:", self.mail["timer"]["timepass"])),
 				print("%5d\t" % (tc)),
 				print("%s" % (self.mail["action"][0])),
-				print
-				print
+				print("")
+				print("")
 			if conf["runtime"]["offline"] and len(loglines) > 0:
 				print(loglines.pop(0))
 			sys.stdout.flush()
@@ -1753,9 +1750,9 @@ self.mail["checksum"]
 		if conf["main"]["savedir"] and not conf["runtime"]["offline"]:
 			if self.mail["action"][0] in ['delete', 'reject', 'block', 'discard']:
 				if not conf["main"]["nonspamonly"]:
-					save_vars(self.mail, "%s/%08d.var" % (conf["main"]["savedir"], self.mail["id"]));
+					save_vars(self.mail, "%s/%08d.var" % (conf["main"]["savedir"], self.mail["id"]))
 			else:
-				save_vars(self.mail, "%s/%08d.var" % (conf["main"]["savedir"], self.mail["id"]));
+				save_vars(self.mail, "%s/%08d.var" % (conf["main"]["savedir"], self.mail["id"]))
 #		for a in ['raw']:
 #			if self.mail.has_key(a): del self.mail[a]
 #		for a in ['smtpcmds','tmpfile','rules','ipfromto','id']:
@@ -2004,7 +2001,7 @@ Your test message was received
 				charset.append(subchar)
 				self.mail["charset"]=uniq(charset)
 		except:
-				debug("EOM Exception, REJECTED", LOG_ERR, id=self.id)
+			debug("EOM Exception, REJECTED", LOG_ERR, id=self.id)
 		try: self.setreply("421", "4.2.1", "Error while parsing MIME structre of message, try again.")
 		except: pass
 #			return Milter.REJECT
@@ -2012,11 +2009,11 @@ Your test message was received
 		if self.tmp:
 			self.tmp.close()
 			mv(self.tmp.name, "/tmp/%s" % (self.tmpname))
-			save_vars(self.mail, "/tmp/%s.var" % (self.tmpname), id=self.mail["id"]);
+			save_vars(self.mail, "/tmp/%s.var" % (self.tmpname), id=self.mail["id"])
 			debug("saved as /tmp/%s" % (self.tmpname), LOG_ERR, id=self.id, trace=False)
 		return Milter.CONTINUE
 # If message is aborted, there probably is not self. So
-        
+
 		if self.mail:
 			fix_received(self.mail)
 		else:
@@ -2056,7 +2053,7 @@ Your test message was received
 				debug("ERROR: test_%s failed" % (test), LOG_DEBUG)
 				debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_DEBUG, id=self.id, trace=True)
 				if conf["runtime"]["offline"]:
-					save_vars(self.mail, "/tmp/%s.var" % (self.tmpname), id=self.mail["id"]);
+					save_vars(self.mail, "/tmp/%s.var" % (self.tmpname), id=self.mail["id"])
 			continue
 
 		if conf["main"]["timeme"]: self.mail["timer"]["smtp_eom"] = str("%.4f") % (timeme(timer, id=self.id, noshow=True))
@@ -2341,7 +2338,7 @@ def Tcrc(childname=None):
 		if childname and not (conf["main"]["pid"] and os.path.exists(conf["main"]["pid"])): break
 ### DO SOMETHING
 		if conf["main"]["crcsave"]:
-			tmpmb = {};
+			tmpmb = {}
 ## Keep messages seen in last 12 hours
 			for crc in msgbase:
 				if not (msgbase[crc]["seen"] < expire):
@@ -2594,7 +2591,7 @@ if __name__ == "__main__":
 		hostname = gethostname()
 
 #       debug("Use RRD: %s" % (userrd), LOG_INFO)
-		debug("Use DNS: %s" % (usedns), LOG_INFO)
+	debug("Use DNS: %s" % (usedns), LOG_INFO)
 	conf["runtime"]["bindir"] = sys.argv[0][0:sys.argv[0].rfind("/")]
 	if not sys.argv[1:]:
 		main()

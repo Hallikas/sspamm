@@ -6,8 +6,8 @@
 
 __author__ = "Sami-Pekka Hallikas <semi@hallikas.com>"
 __email__ = "semi@hallikas.com"
-__date__ = "18 Aug 2010"
-__version__ = "3.0-devel"
+__date__ = "30 Apr 2025"
+__version__ = "4.0-devel"
 
 import sys
 import os
@@ -16,25 +16,17 @@ import datetime
 from dateutil.parser import *
 from dateutil import tz
 import locale
-import ConfigParser
+import configparser
 import re
-import thread
-import formatter, htmllib, urllib
-UseSHA=0
-try:
-# For python > 2.4
-	UseSHA=25
-	import hashlib
-	
-except:
-# For Python >= 2.4
-	UseSHA=24
-	import sha
+import _thread
+from html.parser import HTMLParser
+from io import StringIO
+import urllib.request, urllib.parse, urllib.error
+import hashlib
 
 from email import message_from_file, message_from_string
-from email.Header import decode_header
-from string import maketrans, letters, digits, punctuation, whitespace
-from string import split, join
+from email.header import decode_header
+from string import ascii_letters, digits, punctuation, whitespace
 from signal import signal, SIGINT, SIGHUP, SIGBUS, SIGTERM
 from socket import gethostname
 
@@ -71,10 +63,8 @@ except:
 
 ## http://sourceforge.net/projects/pymilter
 ## Ubuntu: spf-milter-python
+## Python3: pip install pymilter
 import Milter
-from milter import \
-	ACCEPT, CONTINUE, REJECT, DISCARD, TEMPFAIL, \
-	ADDHDRS, CHGBODY, ADDRCPT, DELRCPT, CHGHDRS
 
 try: from milter import QUARANTINE
 except: pass
@@ -123,6 +113,7 @@ confdefaults = {
 		"ipfromto":		"Flag",
 		"headers":		"Flag",
 		"dyndns":		"Flag",
+		"subject":		"Flag",
 		"wordscan":		"Flag",
 		"bayesian":		"Flag",
 		"rbl":			"Flag",
@@ -135,7 +126,7 @@ confdefaults = {
 	},
 	"rules": {
 		"hide":			[],
-		"connect":		["(?#ignore)(127.0.0.1)"],
+		"connect":		[r"(?#ignore)(127.0.0.1)"],
 		"helo":			[],
 		"accept":		[],
 		"block":		[],
@@ -143,7 +134,7 @@ confdefaults = {
 		"headers":		[],
 		"charset":		[],
 		"dyndns":		[
-					"^[0-9]{1,3}[\-\.][0-9]{1,3}[\-\.][0-9]{1,3}[\-\.][0-9]{1-3}\..*",
+					r"^[0-9]{1,3}[\-\.][0-9]{1,3}[\-\.][0-9]{1,3}[\-\.][0-9]{1-3}\..*",
 		],
 		"subject":		[],
 		"links":		[],
@@ -184,12 +175,13 @@ loglines = []
 ###
 ### Configuration
 ###
-class MyParser(ConfigParser.ConfigParser):
+class MyParser(configparser.RawConfigParser):
 	def getvalue(self,section,option,default=None,warn=False):
 		value = default
 		try:
 			value = self.getboolean(section, option)
-		except ConfigParser.NoOptionError, (err):
+		except configparser.NoOptionError as xxx_todo_changeme:
+			(err) = xxx_todo_changeme
 			if warn:
 				debug(err, LOG_ERR)
 			pass
@@ -213,7 +205,8 @@ class MyParser(ConfigParser.ConfigParser):
 			except IndexError:
 				t = []
 			return t
-		except ConfigParser.NoOptionError, (err):
+		except configparser.NoOptionError as xxx_todo_changeme1:
+			(err) = xxx_todo_changeme1
 			if warn:
 				debug(err, LOG_ERR)
 			pass
@@ -227,14 +220,15 @@ class MyParser(ConfigParser.ConfigParser):
 	def getlist(self,section,option,default=None,warn=False):
 		try:
 			value = self.get(section, option)
-			(value, count) = re.compile(",|;|\n").subn(' ', value)
+			(value, count) = re.compile(r",|;|\n").subn(' ', value)
 			t = value.split()
 			try:
 				if t[0] == "": t.remove('')
 			except IndexError:
 				t = []
 			return t
-		except ConfigParser.NoOptionError, (err):
+		except configparser.NoOptionError as xxx_todo_changeme2:
+			(err) = xxx_todo_changeme2
 			if warn:
 				debug(err, LOG_ERR)
 			pass
@@ -252,9 +246,13 @@ def config_read(cfgfile = conffile):
 	tmpconf = conf.copy()
 	cp = MyParser()
 	if not os.access(cfgfile, os.R_OK):
-		print("FATAL: Can't access %s." % (cfgfile))
+		print(("FATAL: Can't access %s." % (cfgfile)))
 		return
-	cp.read(cfgfile)
+	try:
+		cp.read(cfgfile)
+	except:
+		with open(cfgfile, encoding="latin-1") as f:
+			cp.read_file(f)
 
 	if not (cp.has_section("main")):
 		print("FATAL: Main section is missing!")
@@ -265,9 +263,9 @@ def config_read(cfgfile = conffile):
 	except:
 		pass
 
-	for s in confdefaults.keys():
+	for s in list(confdefaults.keys()):
 		if cp.has_section(s):
-			for k in confdefaults[s].keys():
+			for k in list(confdefaults[s].keys()):
 				try:
 					if 0:
 						pass
@@ -276,7 +274,7 @@ def config_read(cfgfile = conffile):
 						t = []
 
 						for i in cp.getlines(s, k, []):
-							i=re.sub("\t| ", "", i).split(":")
+							i=re.sub(r"\t| ", "", i).split(":")
 							if '' in i: i.remove('')
 							if len(i) == 1: i.append("all")
 							t.append((i[0].split(","), i[1].split(",")))
@@ -286,7 +284,7 @@ def config_read(cfgfile = conffile):
 						t = []
 
 						for i in cp.getlines(s, k, []):
-							i=re.sub("\t| ", "", i).split(":")
+							i=re.sub(r"\t| ", "", i).split(":")
 							if '' in i: i.remove('')
 							if len(i) > 1:
 								t.append((i[0].split(","), ":".join(i[1:]).split(",")))
@@ -296,7 +294,7 @@ def config_read(cfgfile = conffile):
 					elif "%s/%s" % (s,k) in [ "main/verbose", "main/offline", "main/crchours", "settings/maxbodysize" ]:
 						tmpconf[s][k] = cp.getint(s, k)
 					elif "%s/%s" % (s,k) in [ "main/pid", "main/sspammdir", "main/tmpdir", "main/logfile", "main/savedir", "main/rrdfile", "main/crcfile" ]:
-						tmpconf[s][k] = re.sub("%h", hostname, cp.get(s, k))
+						tmpconf[s][k] = re.sub(r"%h", hostname, cp.get(s, k))
 					elif "%s/%s" % (s,k) in [ "main/name", "main/port"]:
 						tmpconf[s][k] = cp.get(s, k)
 					elif s in [ "actions" ]:
@@ -309,7 +307,7 @@ def config_read(cfgfile = conffile):
 						testconf = []
 						tmpconf[s][k] = cp.getlines(s, k, tmpconf[s][k])
 						for t in tmpconf[s][k]:
-							if dumbregtest(t): testconf.append(t)
+							if t != '' and dumbregtest(t): testconf.append(t)
 						tmpconf[s][k] = testconf
 					elif k in ["verbose", "enabled", "timeme", "watchmode", "childs", "crcsave", "nonspamonly", "confbackup"]:
 						tmpconf[s][k] = cp.getvalue(s, k)
@@ -322,7 +320,7 @@ def config_read(cfgfile = conffile):
 					else:
 						debug("CONFIG UNKNOWN %s / %s" % (s, k), LOG_ALERT)
 						tmpconf[s][k] = "** N/A **"
-				except ConfigParser.NoOptionError:
+				except configparser.NoOptionError:
 					if "%s/%s" % (s,k) in [ "main/sspammdir", "main/timeme", "main/logfile", "main/savedir", "main/rrdfile", "main/crcfile"]:
 						debug("Configuration value for %s/%s is not set." % (s, k), LOG_DEBUG)
 						tmpconf[s][k] = None
@@ -349,9 +347,9 @@ def config_read(cfgfile = conffile):
 #						testconf = []
 #						for t in tmpconf[s][k]:
 #							if "%s/%s" % (s,k) in [] or ("%s/%s" % (s,k))[-3:] == "_ip":
-#								t = re.sub("^", "^", re.sub("\?", ".", re.sub("\.", "\.", t)))
+#								t = re.sub(r"^", "^", re.sub(r"\?", ".", re.sub(r"\.", "\.", t)))
 #							elif "%s/%s" % (s,k) in ["dyndns/rules"] or ("%s/%s" % (s,k))[-4:] == "_dns":
-#								t = re.sub("$", "$", re.sub("\*", ".*", re.sub("\?", ".", re.sub("\.", "\.", t))))
+#								t = re.sub(r"$", "$", re.sub(r"\*", ".*", re.sub(r"\?", ".", re.sub(r"\.", "\.", t))))
 #							if dumbregtest(t): testconf.append(t)
 #						tmpconf[s][k] = testconf
 		else:
@@ -403,7 +401,7 @@ def config_read(cfgfile = conffile):
 	tmp = {}
 	for val in tmpconf["filter"]["rules"]:
 		for domain in val[0]:
-			if not tmp.has_key(domain): tmp[domain] = {}
+			if domain not in tmp: tmp[domain] = {}
 			for rule in val[1]:
 				r = rule.split('=')
 				if len(r) > 2:
@@ -416,7 +414,7 @@ def config_read(cfgfile = conffile):
 					test="rules"
 					param=r[0]
 				if test == "rules":
-					if not tmp[domain].has_key(test): tmp[domain][test] = []
+					if test not in tmp[domain]: tmp[domain][test] = []
 					tmp[domain][test].append(param)
 				else:
 					tmp[domain][test] = param
@@ -429,15 +427,16 @@ def config_load(file):
 
 	try:
 		conf = config_read(file)
-	except:
-		debug("CONFIG LOAD ERROR. %s: %s" % (sys.exc_type, sys.exc_value), LOG_CRIT)
+	except Exception as e:
+		exc_type, exc_value = type(e), e
+		debug("CONFIG LOAD ERROR. %s: %s" % (exc_type, exc_value), LOG_CRIT)
 		print_exc(limit=None, file=sys.stderr)
 
 def config_save(file):
 	global conf
 
 	try:
-		fp = open("%s.bak" % (file), "w+b")
+		fp = open("%s.bak" % (file), "w+")
 		tmpconf = conf.copy()
 		del tmpconf["runtime"]
 		fp.write(show_vars(tmpconf))
@@ -461,20 +460,24 @@ def rmdir(path, id=None):
 	debug("rmdir(\"%s\")" % (path), LOG_DEBUG, id=id)
 	try:
 		os.rmdir(path)
-	except OSError, (errno, strerror):
-		if errno != 39: debug("%s" % sys.exc_value, LOG_ERR)
-	except:
-		debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR)
+	except OSError as xxx_todo_changeme4:
+		(errno, strerror) = xxx_todo_changeme4.args
+		if errno != 39: debug("%s" % exc_value, LOG_ERR)
+	except Exception as e:
+		exc_type, exc_value = type(e), e
+		debug("%s: %s" % (exc_type, exc_value), LOG_ERR)
 	return
 
 def mkdir(path, id=None):
 	debug("mkdir(\"%s\")" % (path), LOG_DEBUG, id=id)
 	try:
 		os.makedirs(path, 0o770)
-	except OSError, (errno, strerror):
-		if errno != 17: debug("%s" % sys.exc_value, LOG_ERR)
-	except:
-		debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR)
+	except OSError as xxx_todo_changeme5:
+		(errno, strerror) = xxx_todo_changeme5.args
+		if errno != 17: debug("%s" % exc_value, LOG_ERR)
+	except Exception as e:
+		exc_type, exc_value = type(e), e
+		debug("%s: %s" % (exc_type, exc_value), LOG_ERR)
 	return
 
 def mv(what, where, id=None):
@@ -484,7 +487,7 @@ def mv(what, where, id=None):
 	except:
 		try:
 			fpin = open(what,"r")
-			fpout = open(where,"w+b")
+			fpout = open(where,"w+")
 			while 1:
 				buf = fpin.read(1024*16)
 				if len(buf) == 0: break
@@ -526,7 +529,7 @@ def debug(args, level=LOG_DEBUG, id=None, trace=None):
 
 def save_vars(var, fname, id=None):
 	debug("save_vars(\"%s\")" % (fname), LOG_DEBUG, id=id)
-	fp = open(fname, "w+b")
+	fp = open(fname, "w+")
 	if fp: fp.write(show_vars(var))
 	fp.close()
 	return
@@ -563,9 +566,9 @@ def load_vars(fname, id=None):
 	return vars
 
 def show(string, comment=None):
-	if comment: print("/* *** <%s> ******" % (comment))
-	print(show_vars(string))
-	if comment: print("***** </%s> *** */" % (comment))
+	if comment: print(("/* *** <%s> ******" % (comment)))
+	print((show_vars(string)))
+	if comment: print(("***** </%s> *** */" % (comment)))
 	return
 
 def show_vars(var, lvl=0):
@@ -575,7 +578,7 @@ def show_vars(var, lvl=0):
 
 	if type(var) is dict:
 		st += "{\n"
-		for k in var.keys():
+		for k in list(var.keys()):
 			st += tab*lvl
 			if(0): # Reserve space for keys
 				if type(k) is int:
@@ -616,7 +619,7 @@ def show_vars(var, lvl=0):
 			st += tab*(lvl-1)
 			st += "]"
 	elif type(var) is str:
-		st += "\'%s\'" % re.sub("\'", "\\\'", var)
+		st += "\'%s\'" % re.sub(r"\'", "\\\'", var)
 	elif type(var) is int:
 		st += "%d" % var
 	elif var == None:
@@ -638,30 +641,38 @@ def timeme(timer=0, noshow=None, id=None, title="Timer"):
 ### Oneliner
 def oneliner(value, id=None):
 #	debug("*oneliner(\"%s\")" % (value[0:160]), LOG_DEBUG, id=id)
-	return re.sub(" + ", " ", re.sub("[\r\n]", "", re.sub("[\t]", " ", value)))
+	return re.sub(r" + ", " ", re.sub(r"[\r\n]", "", re.sub(r"[\t]", " ", value)))
 #
 #2del# def oneliner(value, id=None, noshow=None):
 #2del# 	if not noshow:
 #2del# 		dots=""
 #2del# 		if len(value) > 60: dots="..."
-#2del# 		debug("*oneliner(\"%s%s\")" % (re.sub("\n", " ", value[0:60]), dots), LOG_DEBUG, id=id)
-#2del# 	return re.sub(" + ", " ", re.sub("[\r\n\t]", " ", value))
+#2del# 		debug("*oneliner(\"%s%s\")" % (re.sub(r"\n", " ", value[0:60]), dots), LOG_DEBUG, id=id)
+#2del# 	return re.sub(r" + ", " ", re.sub(r"[\r\n\t]", " ", value))
 
-class HTMLStripper(htmllib.HTMLParser):
+class HTMLStripper(HTMLParser):
 	def __init__(self):
 #		debug("HTMLStripper.__init__()", LOG_DEBUG)
-		self.bodytext = StringIO.StringIO()
-		writer = formatter.DumbWriter(self.bodytext)
-		htmllib.HTMLParser.__init__(self, formatter.AbstractFormatter(writer))
+		super(HTMLStripper, self).__init__()
+		self.bodytext = StringIO()
+		self.anchorlist = []
+		self.anchor = None
+
+	def handle_data(self, data):
+		self.bodytext.write(data)
+
+	def handle_starttag(self, tag, attrs):
+		if tag == "a":
+			self.anchor = dict(attrs).get("href")
+			if self.anchor:
+				self.anchorlist.append(self.anchor)
 
 	def anchor_end(self):
-#		debug("HTMLStripper.anchor_end()", LOG_DEBUG)
 		if self.anchor:
 			self.handle_data('')
 			self.anchor = None
 
 	def gettext(self):
-#		debug("HTMLStripper.gettext()", LOG_DEBUG)
 		return self.bodytext.getvalue()
 
 def html_strip(htmlstr, id=None):
@@ -669,26 +680,41 @@ def html_strip(htmlstr, id=None):
 	debug("*html_strip()", LOG_DEBUG, id=id)
 	try:
 		nohtml=HTMLStripper()
-		htmlstr = re.sub("<font (color=.*? )?size=(\")?1(\")?>.*?</font>\n", "", re.sub("\\\\'", "\'", re.sub('\\\\"', '\"', htmlstr)))
+		htmlstr = re.sub(r"<font (color=.*? )?size=(\")?1(\")?>.*?</font>\n", "", re.sub(r"\\\\'", "\'", re.sub(r'\\\\"', '\"', htmlstr)))
 		nohtml.feed(htmlstr)
 		nohtml.close()
 	except:
 		if conf["main"]["timeme"] is True: timer = timeme()
 		return(htmlstr, [])
 #	if conf["main"]["timeme"] is True: mail["timer"]["html_strip"] = str("%.4f") % timeme(timer, id=id)
-	return (re.sub("\(image\)", "", re.sub("\xa0", "", nohtml.gettext())), nohtml.anchorlist)
+	return (re.sub(r"\(image\)", "", re.sub(r"\xa0", "", nohtml.gettext())), nohtml.anchorlist)
 
 ###
 ### Strip unprintable
 ###
 def stripUnprintable(input_string, id=None):
-#	debug("stripUnprintable()", LOG_DEBUG, id=id)
-	try: filterUnprintable = stripUnprintable.filter
-	except AttributeError: # only the first time it is called
-		allchars = maketrans('','')
-		delchars = allchars.translate(allchars, letters+digits+punctuation+whitespace)
-		filterUnprintable = stripUnprintable.filter = lambda input: input.translate(allchars, delchars)
+	try:
+		filterUnprintable = stripUnprintable.filter
+	except AttributeError:
+		keep = ascii_letters + digits + punctuation + whitespace
+		delchars = ''.join(chr(i) for i in range(128) if chr(i) not in keep)
+		trans = str.maketrans('', '', delchars)
+		stripUnprintable.filter = lambda s: s.translate(trans)
+		filterUnprintable = stripUnprintable.filter
 	return filterUnprintable(input_string)
+#	try:
+#		filterUnprintable = stripUnprintable.filter
+#	except AttributeError:
+#		keep = ascii_letters + digits + punctuation + whitespace
+#		if 0:
+#			trans = str.maketrans('', '', ''.join(chr(i) for i in range(128) if chr(i) not in keep))
+#			stripUnprintable.filter = lambda s: s.translate(trans)
+#		else:
+#			allchars = {i: None for i in range(128) if chr(i) not in keep}
+#			stripUnprintable.filter = lambda input: input.translate(allchars)
+#
+#		filterUnprintable = stripUnprintable.filter
+#	return filterUnprintable(input_string)
 
 ###
 ### Unique keys
@@ -792,7 +818,7 @@ def dumbregtest(regrule):
 	try:
 		test = re.search(regrule, "The quick brown fox jumps over the lazy dog.\n\t1234567890@${[]}!#&/()=*+-_,;:", re.IGNORECASE+re.MULTILINE)
 		if test:
-			debug("regexp error: Matched too easily: %s" % (regrule), LOG_ERR)
+			debug("regexp error: Matched too easily: '%s'" % (regrule), LOG_ERR)
 			return False
 	except:
 		return False
@@ -821,11 +847,12 @@ def is_listed(where,what,flags=re.IGNORECASE+re.MULTILINE,id=None,noshow=None,no
 			if not noshow: debug("\twhere = %s" % (where), LOG_DEBUG, id=id)
 			for needle in what:
 				if not noshow: debug("\t\t%s" % (needle), LOG_DEBUG, id=id)
-				if id and globaltmp and globaltmp.has_key(id): globaltmp[id] += 1
+				if id and globaltmp and id in globaltmp: globaltmp[id] += 1
 				try:
-					tmp = re.search("%s" % (needle), haystack, flags)
-				except:
-					debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR)
+					tmp = re.search(r"%s" % (needle), haystack, flags)
+				except Exception as e:
+					exc_type, exc_value = type(e), e
+					debug("%s: %s" % (exc_type, exc_value), LOG_ERR)
 					debug("FAILED: is_listed(%s, %s)" % (haystack, needle), LOG_ERR, id=id)
 					pass
 				if tmp:
@@ -837,7 +864,7 @@ def is_listed(where,what,flags=re.IGNORECASE+re.MULTILINE,id=None,noshow=None,no
 ## Should not be used, because it splits also (earth|moon) tests to two
 ## different tests, which raises error.
 #				if not norecursive: is_listed(tmp.group(), needle.split('|'),noshow=True,norecursive=True)
-					tmp = re.search("^\(\?#.*?\)", needle)
+					tmp = re.search(r"^\(\?#.*?\)", needle)
 					if tmp: return (tmp.group()[3:-1], tmpmatch)
 					return (True, tmpmatch)
 	return None
@@ -851,8 +878,9 @@ def is_filtered(mail):
 		mail["todomain"] = mail["to"][0].split("@")[1]
 		found = is_listed(mail["todomain"], conf["filter"]["domains"], id=mail["id"])
 		if found: debug("\tFound: %s" % (found), LOG_INFO, id=mail["id"])
-	except:
-		debug("FAILED: is_filtered %s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR, id=mail["id"], trace=True)
+	except Exception as e:
+		exc_type, exc_value = type(e), e
+		debug("FAILED: is_filtered %s: %s" % (exc_type, exc_value), LOG_ERR, id=mail["id"], trace=True)
 		mail["failed"] = "is_filtered(\"%s\"[0].split(\"@\")[1])" % (mail["to"])
 		if not conf["runtime"]["offline"]:
 			save_vars(mail, "/tmp/%08d.var" % (mail["id"]), id=mail["id"])
@@ -863,13 +891,14 @@ def is_filtered(mail):
 def domainrule(mail, key, default=None):
 	if not mail["rules"]: return default
 	try:
-		if mail["rules"].has_key(key):
+		if key in mail["rules"]:
 			return mail["rules"][key]
-		if mail["rules"].has_key("rules"):
+		if "rules" in mail["rules"]:
 			if key in mail["rules"]["rules"]: return True
 			if '!'+key in mail["rules"]["rules"]: return False
-	except:
-		debug("%s: %s (domainrule)" % (sys.exc_type, sys.exc_value), LOG_ERR)
+	except Exception as e:
+		exc_type, exc_value = type(e), e
+		debug("%s: %s (domainrule)" % (exc_type, exc_value), LOG_ERR)
 	return default
 
 
@@ -879,27 +908,29 @@ def makepid(fname):
 
 	if os.path.exists(fname):
 		fp = open(fname, "r")
-		pid=int(fp.readline().strip())
-		fp.close
-
-		if os.path.exists("/proc/%d" % pid):
-			fp = open("/proc/%d/stat" % pid, "r")
-			pidstat = fp.readline().strip().split(" ")
+		try:
+			pid=int(fp.readline().strip())
 			fp.close
-			if pidstat[2] == "S": pidstat[2] = "Sleeping"
-			elif pidstat[2] == "R": pidstat[2] = "Running"
-			elif pidstat[2] == "T": pidstat[2] = "Stopped"
-			debug("PID file %s found for process %s (%s)." % (conf["main"]["pid"], pidstat[1][1:-1], pidstat[2]), LOG_EMERG)
-			return False
-		else:
-			rm(fname)
+
+			if os.path.exists("/proc/%d" % pid):
+				fp = open("/proc/%d/stat" % pid, "r")
+				pidstat = fp.readline().strip().split(" ")
+				fp.close
+				if pidstat[2] == "S": pidstat[2] = "Sleeping"
+				elif pidstat[2] == "R": pidstat[2] = "Running"
+				elif pidstat[2] == "T": pidstat[2] = "Stopped"
+				debug("PID file %s found for process %s (%s)." % (conf["main"]["pid"], pidstat[1][1:-1], pidstat[2]), LOG_EMERG)
+				return False
+		except ValueError: pass
+		rm(fname)
 	try:
 		debug("Create pid %s" % fname, LOG_NOTICE)
-		fp = open(fname, "w+b")
+		fp = open(fname, "w+")
 		fp.write("%s\n" % os.getpid())
 		fp.close()
-	except:
-		return ("Error", sys.exc_value)
+	except Exception as e:
+		exc_type, exc_value = type(e), e
+		return ("Error", exc_value)
 		debug("Couldn't create %s: %s" % (conf["main"]["pid"], tmp[1]), LOG_CRIT)
 		return False
 	return True
@@ -909,7 +940,7 @@ def makepid(fname):
 ## Also return all parsed addresses as array.
 def parse_addrs(addr, id=None):
 #	debug("*parse_addrs(\"%s\")" % (addr), LOG_DEBUG, id=id)
-	addr=re.sub(" ", "", re.sub(' ?[("].*?[)"]', "", addr.lower().strip()))
+	addr=re.sub(r" ", "", re.sub(r' ?[("].*?[)"]', "", addr.lower().strip()))
 	if addr.startswith("<") or addr.endswith(">"):
 		return [addr[addr.find("<")+1:addr.rfind(">")]]
 	elif addr.find(","):
@@ -924,7 +955,7 @@ def reversedns(ip, id=None):
 	if not usedns:
 		debug("NO DNS Module loaded", LOG_INFO, id=id)
 		return None
-	a = split(ip, '.')
+	a = ip.split('.')
 
 	if a[0] == "127" or a[0] == "10" or (a[0] == "192" and a[1] == "168") or (a[0] == "169" and a[1] == "254") or (a[0] == "172" and a[1] == "16"):
 		debug("*reversedns() = Private network", LOG_DEBUG, id=id)
@@ -935,12 +966,13 @@ def reversedns(ip, id=None):
 		ptr = None
 		if DNS.defaults['server'] == []: DNS.DiscoverNameServers()
 		a.reverse()
-		b = join(a, '.')+'.in-addr.arpa'
+		b = '.'.join(a)+'.in-addr.arpa'
 		if DNS.DnsRequest(b, qtype = 'ptr').req().header['status'] == "NOERROR":
 			ptr=DNS.DnsRequest(b, qtype = 'ptr').req().answers[0]['data']
-	except:
+	except Exception as e:
+		exc_type, exc_value = type(e), e
 ## Reason for exception is usually timeout, ignore
-		debug("DNS query problems. %s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR)
+		debug("DNS query problems. %s: %s" % (exc_type, exc_value), LOG_ERR)
 		pass
 
 	debug("\tPTR reply: %s" % (ptr), LOG_DEBUG, id=id)
@@ -959,7 +991,7 @@ def makeipfromto(mail):
 		for rec in mail["received"]:
 			for to in mail["to"]:
 				tmp = "%s:%s" % (mail["received"][rec]["ip"],mail["from"][0])
-				if mail["received"][rec].has_key("dns"):
+				if "dns" in mail["received"][rec]:
 					tmp = "%s:%s" % (mail["received"][rec]["dns"],mail["from"][0])
 					if tmp not in tmp_fromto[to]:
 						debug("\t\tAppend %s" % (tmp), LOG_DEBUG, id=mail["id"])
@@ -979,19 +1011,19 @@ def fix_received(mail):
 		debug("Received from %s" % (mail["received"][r]), LOG_INFO, id=mail["id"])
 
 		# Now we have received lines, make readable and remove stupid entries
-		if mail["received"][r].has_key("by"):
+		if "by" in mail["received"][r]:
 			del mail["received"][r]["by"]
-		for f in mail["received"][r].keys():
+		for f in list(mail["received"][r].keys()):
 			if mail["received"][r][f] == None:
 				del mail["received"][r][f]
 
-		if not mail["received"][r].has_key("ip"):
+		if "ip" not in mail["received"][r]:
 			toremove.append(r)
 			continue
 		
 		debug("\tIs hidden?", LOG_DEBUG, id=mail["id"])
 #		if is_listed(mail["received"][r].get("dns"), "^localhost", id=mail["id"]) or is_listed(mail["received"][r].get("ip"), "^127\.0\.0\.1", id=mail["id"]):
-		if is_listed(mail["received"][r].get("ip"), "^127\.0\.0\.1", id=mail["id"]):
+		if is_listed(mail["received"][r].get("ip"), r"^127\.0\.0\.1", id=mail["id"]):
 			toremove.append(r)
 			continue
 		elif is_listed(mail["received"][r].get("dns"), conf["rules"]["hide"], id=mail["id"]):
@@ -1002,24 +1034,25 @@ def fix_received(mail):
 			continue
 
 		try:
-			if mail["received"][r].has_key("dns"):
+			if "dns" in mail["received"][r]:
 				debug("\tIs DNS entry ok?", LOG_DEBUG, id=mail["id"])
-				if mail["received"][r]["dns"][0] == "[" or is_listed(mail["received"][r]["dns"], ["^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$"], id=mail["id"]):
+				if mail["received"][r]["dns"][0] == "[" or is_listed(mail["received"][r]["dns"], [r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$"], id=mail["id"]):
 					del mail["received"][r]["dns"]
-				elif mail["received"][r].has_key("helo") and mail["received"][r]["dns"] == mail["received"][r]["helo"]:
+				elif "helo" in mail["received"][r] and mail["received"][r]["dns"] == mail["received"][r]["helo"]:
 					del mail["received"][r]["helo"]
 
-			if mail["received"][r].has_key("helo"):
+			if "helo" in mail["received"][r]:
 				debug("\tIs hello ok?", LOG_DEBUG, id=mail["id"])
 				if mail["received"][r]["helo"][0] == "[":
 					mail["received"][r]["helo"] = mail["received"][r]["helo"][1:-1]
-				if is_listed(mail["received"][r]["helo"], ["^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$"], id=mail["id"]):
+				if is_listed(mail["received"][r]["helo"], [r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$"], id=mail["id"]):
 					if mail["received"][r]["helo"] == mail["received"][r]["ip"]:
 						del mail["received"][r]["helo"]
-					elif is_listed(mail["received"][r]["helo"], ["^127\.", "^192\.168\.", "^10\."], id=mail["id"]):
+					elif is_listed(mail["received"][r]["helo"], [r"^127\.", r"^192\.168\.", r"^10\."], id=mail["id"]):
 						del mail["received"][r]["helo"]
-		except:
-			debug("%s: %s (eoh -> received fix)" % (sys.exc_type, sys.exc_value), LOG_ERR, id=mail["id"], trace=False)
+		except Exception as e:
+			exc_type, exc_value = type(e), e
+			debug("%s: %s (eoh -> received fix)" % (exc_type, exc_value), LOG_ERR, id=mail["id"], trace=False)
 			if not conf["runtime"]["offline"]:
 # SEMI: This is so stupid, but save_vars says that 'self.mail' is not global
 				try:
@@ -1063,13 +1096,13 @@ def test_connect(mail):
 		res = ("accept", "LOCAL")
 	else:
 		for rec in mail["received"]:
-			if not res and mail["received"][rec].has_key("dns"):
+			if not res and "dns" in mail["received"][rec]:
 				debug("\tConnect from %s (dns)" % (mail["received"][rec]["dns"]), LOG_INFO, id=mail["id"])
 				res = is_listed(mail["received"][rec]["dns"], conf["rules"]["connect"], id=mail["id"])
 			if not res:
 				debug("\tConnect from %s" % (mail["received"][rec]["ip"]), LOG_INFO, id=mail["id"])
 				res = is_listed(mail["received"][rec]["ip"], conf["rules"]["connect"], id=mail["id"])
-#                       if not res and mail["received"][rec].has_key("helo"):
+#			if not res and mail["received"][rec].has_key("helo"):
 #				debug("\tConnect from %s (helo)" % (mail["received"][rec]["helo"]), LOG_INFO, id=mail["id"])
 #				res = is_listed(mail["received"][rec]["helo"], conf["rules"]["connect"], id=mail["id"])
 			if res:
@@ -1077,7 +1110,7 @@ def test_connect(mail):
 ## break for NOT to be RECURSIVE (Should it be? or not?)
 			break
 
-	if globaltmp and globaltmp.has_key(mail["id"]):
+	if globaltmp and mail["id"] in globaltmp:
 		debug("\tTests executed: %d" % (globaltmp[mail["id"]]), LOG_INFO, id=mail["id"])
 		mail["tests"]["connect"] = globaltmp[mail["id"]]
 		del globaltmp[mail["id"]]
@@ -1095,7 +1128,7 @@ def test_helo(mail):
 	mail["tests"]["helo"] = 0
 
 	for rec in mail["received"]:
-		if mail["received"][rec].has_key("helo"):
+		if "helo" in mail["received"][rec]:
 			helo = mail["received"][rec]["helo"]
 			mail["tests"]["helo"] += 1
 			debug("\thelo = %s" % (helo), LOG_INFO, id=mail["id"])
@@ -1103,10 +1136,10 @@ def test_helo(mail):
 			if helo == mail["my"]["ip"]:
 				debug("\t\tFound: %s = %s (my ip)" % (helo, mail["my"]["ip"]), LOG_DEBUG, id=mail["id"])
 				res = (True, "My IP")
-			elif mail["my"].has_key("dns") and helo == mail["my"]["dns"]:
+			elif "dns" in mail["my"] and helo == mail["my"]["dns"]:
 				debug("\t\tFound: %s = my dns" % (helo), LOG_DEBUG, id=mail["id"])
 				res = ("flag", "My DNS")
-			elif mail.has_key("todomain") and helo == mail["todomain"]:
+			elif "todomain" in mail and helo == mail["todomain"]:
 				debug("\t\ttest_helo: %s = todomain" % (helo), LOG_DEBUG, id=mail["id"])
 				res = ("flag", "Rcpt Domain")
 			else:
@@ -1117,7 +1150,7 @@ def test_helo(mail):
 ## NOT RECURSIVE (yet. Should it be?)
 #		break
 
-	if globaltmp and globaltmp.has_key(mail["id"]):
+	if globaltmp and mail["id"] in globaltmp:
 		del globaltmp[mail["id"]]
 
 	if res and res[0] == True:
@@ -1127,7 +1160,7 @@ def test_helo(mail):
 	return (res, mail)
 
 def test_accept(mail):
-	if not conf.has_key("rules") or not conf["rules"].has_key("accept"):
+	if "rules" not in conf or "accept" not in conf["rules"]:
 		return(None, mail)
 	makeipfromto(mail)
 	debug("*test_accept()", LOG_INFO, id=mail["id"])
@@ -1144,7 +1177,7 @@ def test_accept(mail):
 				if res[0] in ['break']: res = None
 				break
 
-	if globaltmp and globaltmp.has_key(mail["id"]):
+	if globaltmp and mail["id"] in globaltmp:
 		debug("\tTests executed: %d" % (globaltmp[mail["id"]]), LOG_INFO, id=mail["id"])
 		mail["tests"]["accept"] = globaltmp[mail["id"]]
 		del globaltmp[mail["id"]]
@@ -1156,7 +1189,7 @@ def test_accept(mail):
 	return (res, mail)
 
 def test_block(mail):
-	if not conf.has_key("rules") or not conf["rules"].has_key("block"):
+	if "rules" not in conf or "block" not in conf["rules"]:
 		return(None, mail)
 	makeipfromto(mail)
 	debug("*test_block()", LOG_DEBUG, id=mail["id"])
@@ -1165,7 +1198,7 @@ def test_block(mail):
 	res = None
 	globaltmp[mail["id"]] = 0
 
-	if not (mail.has_key("result") and mail["result"].has_key("accept") and mail["result"]["accept"] and mail["result"]["accept"][0] in ['skip']):
+	if not ("result" in mail and "accept" in mail["result"] and mail["result"]["accept"] and mail["result"]["accept"][0] in ['skip']):
 		for to in mail["ipfromto"]:
 			for tmp in mail["ipfromto"][to]:
 				res = is_listed(tmp+":"+to, conf["rules"]["block"], id=mail["id"])
@@ -1173,7 +1206,7 @@ def test_block(mail):
 					debug("\t\tMATCH, block %s %s" % (res), LOG_INFO, id=mail["id"])
 					break
 
-	if globaltmp and globaltmp.has_key(mail["id"]):
+	if globaltmp and mail["id"] in globaltmp:
 		debug("\tTests executed: %d" % (globaltmp[mail["id"]]), LOG_INFO, id=mail["id"])
 		mail["tests"]["block"] = globaltmp[mail["id"]]
 		del globaltmp[mail["id"]]
@@ -1185,7 +1218,7 @@ def test_block(mail):
 	return (res, mail)
 
 def test_ipfromto(mail):
-	if not conf.has_key("rules") or not conf["rules"].has_key("ipfromto"):
+	if "rules" not in conf or "ipfromto" not in conf["rules"]:
 		return(None, mail)
 	makeipfromto(mail)
 	debug("*test_ipfromto()", LOG_INFO, id=mail["id"])
@@ -1203,7 +1236,7 @@ def test_ipfromto(mail):
 					break
 				continue
 
-	if globaltmp and globaltmp.has_key(mail["id"]):
+	if globaltmp and mail["id"] in globaltmp:
 		debug("\tTests executed: %d" % (globaltmp[mail["id"]]), LOG_INFO, id=mail["id"])
 		mail["tests"]["ipfromto"] = globaltmp[mail["id"]]
 		del globaltmp[mail["id"]]
@@ -1226,11 +1259,11 @@ def test_samefromto(mail):
 	m_from = mail["from"]
 	m_to = mail["to"]
 
-	if mail["header"].has_key("From"):
+	if "From" in mail["header"]:
 		a = re.search(r"<(.+?)>", mail["header"]["From"])
 		if a:
 			h_from.append(a.groups()[0])
-	if mail["header"].has_key("To"):
+	if "To" in mail["header"]:
 		a = re.compile(r"<(.+?)>")
 		for m in a.finditer(mail["header"]["To"]):
 			h_to.append(m.group(1))
@@ -1283,7 +1316,7 @@ def test_headers(mail):
 			debug("\t\tMATCH, headers %s %s" % (res), LOG_INFO, id=mail["id"])
 			break
 
-	if globaltmp and globaltmp.has_key(mail["id"]):
+	if globaltmp and mail["id"] in globaltmp:
 		debug("\tTests executed: %d" % (globaltmp[mail["id"]]), LOG_INFO, id=mail["id"])
 		mail["tests"]["headers"] = globaltmp[mail["id"]]
 		del globaltmp[mail["id"]]
@@ -1292,6 +1325,35 @@ def test_headers(mail):
 		tmp = res[1]
 		res = (conf["actions"]["headers"], tmp)
 	if conf["main"]["timeme"] is True: mail["timer"]["headers"] = str("%.4f") % timeme(timer, id=mail["id"])
+	return (res, mail)
+
+def test_subject(mail):
+	debug("*test_subject()", LOG_INFO, id=mail["id"])
+	if conf["main"]["timeme"] is True: timer = timeme()
+	res = None
+
+	if mail["size"] > conf["settings"]["maxbodysize"]*1024:
+		return (res, mail)
+	mail["tests"]["subject"] = 0
+	globaltmp[mail["id"]] = 0
+
+	part = "Subject"
+	debug("\tScanning %s: %s" % (part, mail["subject"]), LOG_INFO, id=mail["id"])
+	res = is_listed(mail["subject"], conf["rules"]["subject"], id=mail["id"])
+	if res:
+		debug("\t* Match found", LOG_DEBUG, id=mail["id"])
+		debug("RES = %s %s" % (res), LOG_DEBUG, id=mail["id"])
+
+
+	if globaltmp and mail["id"] in globaltmp:
+		debug("\tTests executed: %d" % (globaltmp[mail["id"]]), LOG_INFO, id=mail["id"])
+		mail["tests"]["subject"] = globaltmp[mail["id"]]
+		del globaltmp[mail["id"]]
+
+	if res and res[0] == True:
+		tmp = res[1]
+		res = (conf["actions"]["subject"], tmp)
+	if conf["main"]["timeme"] is True: mail["timer"]["subject"] = str("%.4f") % timeme(timer, id=mail["id"])
 	return (res, mail)
 
 def test_wordscan(mail):
@@ -1304,20 +1366,17 @@ def test_wordscan(mail):
 	mail["tests"]["wordscan"] = 0
 	globaltmp[mail["id"]] = 0
 
-	part = "Subject"
-	debug("\tScanning %s: %s" % (part, mail["subject"]), LOG_INFO, id=mail["id"])
-	res = is_listed(mail["subject"], conf["rules"]["subject"], id=mail["id"])
+	part = "n/a"
+#	res = is_listed(mail["subject"], conf["rules"]["blockwords"], id=mail["id"])
 #	if res:
-#		debug("\t\tMATCH, wordscan/subject %s %s" % (res), LOG_INFO, id=mail["id"])
+#		debug("\t\tMATCH, wordscan/subject (with blockwords) %s %s" % (res), LOG_INFO, id=mail["id"])
 
-	if not res:
-		res = is_listed(mail["subject"], conf["rules"]["blockwords"], id=mail["id"])
-#		if res:
-#			debug("\t\tMATCH, wordscan/subject (with blockwords) %s %s" % (res), LOG_INFO, id=mail["id"])
-
-	if not res and mail.has_key("mime") and mail["mime"]:
+	if not res and "mime" in mail and mail["mime"]:
 		for a in mail["mime"]:
-				tmp = re.sub("\r\n", "\n", mail["mime"][a][4])
+				text = mail["mime"][a][4]
+				if isinstance(text, bytes):
+					text = text.decode("utf-8", errors="replace")
+				tmp = re.sub(r"\r\n", "\n", text)
 				part = "%s%s" % (mail["mime"][a][1][0:1].upper(), mail["mime"][a][1][1:].lower())
 				if mail["mime"][a][1] in ["html", "plain"]:
 					if mail["mime"][a][1] in ["html"]:
@@ -1341,7 +1400,7 @@ def test_wordscan(mail):
 							res = is_listed(oneliner(tmp, id=mail["id"]), conf["rules"]["blockwords"], id=mail["id"])
 						if not res:
 							debug("\tScanning %d: %s (oneliner, stripped)" % (a, part), LOG_INFO, id=mail["id"])
-							res = is_listed(re.sub(" + ", " ", re.sub("[^a-zA-Z0-9ÖÄÅöäå€\-:/,.%?!$@ \n]", " ", (oneliner(tmp, id=mail["id"])))), conf["rules"]["blockwords"], id=mail["id"])
+							res = is_listed(re.sub(r" + ", " ", re.sub(r"[^a-zA-Z0-9ÖÄÅöäå€\-:/,.%?!$@ \n]", " ", (oneliner(tmp, id=mail["id"])))), conf["rules"]["blockwords"], id=mail["id"])
 					if not res:
 						debug("\tScanning %d: %s" % (a, part), LOG_INFO, id=mail["id"])
 						res = is_listed(tmp, conf["rules"]["blockwords"], id=mail["id"])
@@ -1355,14 +1414,14 @@ def test_wordscan(mail):
 					break
 
 	elif not res:
-			tmp = re.sub("\r\n", "\n", mail["raw"])
+			tmp = re.sub(r"\r\n", "\n", mail["raw"])
 			debug("\tScanning 'raw message'", LOG_INFO, id=mail["id"])
 			scan = is_listed(tmp, conf["rules"]["blockwords"], id=mail["id"])
 	else:
 		debug("\t* Match found", LOG_DEBUG, id=mail["id"])
 		debug("RES = %s %s" % (res), LOG_DEBUG, id=mail["id"])
 
-	if globaltmp and globaltmp.has_key(mail["id"]):
+	if globaltmp and mail["id"] in globaltmp:
 		debug("\tTests executed: %d" % (globaltmp[mail["id"]]), LOG_INFO, id=mail["id"])
 		mail["tests"]["wordscan"] = globaltmp[mail["id"]]
 		del globaltmp[mail["id"]]
@@ -1381,7 +1440,7 @@ def test_dyndns(mail):
 	globaltmp[mail["id"]] = 0
 
 	for rec in mail["received"]:
-		if not mail["received"][rec].has_key("skip") and mail["received"][rec].has_key("dns"):
+		if "skip" not in mail["received"][rec] and "dns" in mail["received"][rec]:
 
 			debug("\tDynDNS test for %d. %s" % (rec, mail["received"][rec]["dns"]), LOG_DEBUG, id=mail["id"])
 			mail["received"][rec]["tested"] = True
@@ -1400,7 +1459,7 @@ def test_dyndns(mail):
 					res = (True, "%s in %s" % (tmp, mail["received"][rec].get("dns")))
 				break
 
-	if globaltmp and globaltmp.has_key(mail["id"]):
+	if globaltmp and mail["id"] in globaltmp:
 		debug("\tTests executed: %d" % (globaltmp[mail["id"]]), LOG_INFO, id=mail["id"])
 		mail["tests"]["dyndns"] = globaltmp[mail["id"]]
 		del globaltmp[mail["id"]]
@@ -1431,13 +1490,13 @@ def test_rbl(mail):
 	if DNS.defaults['server'] == []: DNS.DiscoverNameServers()
 		
 	for rec in mail["received"]:
-		if not (mail["received"][rec].has_key("skip") and  mail["received"][rec]["skip"] in ['skip']):
+		if not ("skip" in mail["received"][rec] and  mail["received"][rec]["skip"] in ['skip']):
 			debug("\tChecking %s" % (mail["received"][rec]["ip"]), LOG_DEBUG, id=mail["id"])
 ### NOTE, WHY? Why I do look all these addesses from dyndns? I do dyndns check for 2 times? WHY WHY?
-			if not mail["received"][rec].has_key("seen"):
+			if "seen" not in mail["received"][rec]:
 				res = None
 				if not res: res = is_listed(mail["received"][rec]["ip"], dyntmp, id=mail["id"])
-				if not res and mail["received"][rec].has_key("dns"): res = is_listed(mail["received"][rec]["dns"], dyntmp, id=mail["id"])
+				if not res and "dns" in mail["received"][rec]: res = is_listed(mail["received"][rec]["dns"], dyntmp, id=mail["id"])
 				if res and res[0] in ['skip', 'ignore']:
 					mail["received"][rec]["skip"] = res
 					continue
@@ -1445,7 +1504,7 @@ def test_rbl(mail):
 					break
 			res = None
 
-			a = split(mail["received"][rec]["ip"], '.')
+			a = mail["received"][rec]["ip"].split('.')
 			a.reverse()
 			for rbl in conf["settings"]["ipservers"]:
 				if rbl[0:3] == "(?#":
@@ -1454,7 +1513,7 @@ def test_rbl(mail):
 				else:
 					action = conf["actions"]["rbl"]
 				debug("\t\tFrom: %s (if match %s)" % (rbl, action), LOG_DEBUG, id=mail["id"])
-				b=join(a, '.')+'.'+rbl
+				b='.'.join(a)+'.'+rbl
 				try:
 					globaltmp[mail["id"]] += 1
 					q = DNS.DnsRequest(b, qtype = 'A').req()
@@ -1468,9 +1527,10 @@ def test_rbl(mail):
 							pass
 						if not res: res = (True, "BLACKLISTED from %s" % (rbl))
 						break
-				except:
+				except Exception as e:
+					exc_type, exc_value = type(e), e
 ## Reason for exception is usually timeout, ignore
-#					debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR)
+#					debug("%s: %s" % (exc_type, exc_value), LOG_ERR)
 # If RBL was failed for some reason. And we have no results, wait for couple seconds and try again.
 					if failed < 3:
 						time.sleep(1)
@@ -1483,7 +1543,7 @@ def test_rbl(mail):
 				if res: break
 			if res: break
 
-	if globaltmp and globaltmp.has_key(mail["id"]):
+	if globaltmp and mail["id"] in globaltmp:
 		debug("\tTests executed: %d" % (globaltmp[mail["id"]]), LOG_INFO, id=mail["id"])
 		mail["tests"]["rbl"] = globaltmp[mail["id"]]
 		del globaltmp[mail["id"]]
@@ -1501,14 +1561,14 @@ def test_charset(mail):
 	mail["tests"]["charset"] = 0
 	globaltmp[mail["id"]] = 0
 
-	if mail.has_key("charset"):
+	if "charset" in mail:
 		for c in mail["charset"]:
 			res = is_listed(c, conf["rules"]["charset"], id=mail["id"])
 			if res and res[0] not in ['skip']:
 				break
 
 	if res and res[0] in ['skip']: res = None
-	if globaltmp and globaltmp.has_key(mail["id"]):
+	if globaltmp and mail["id"] in globaltmp:
 		debug("\tTests executed: %d" % (globaltmp[mail["id"]]), LOG_INFO, id=mail["id"])
 		mail["tests"]["charset"] = globaltmp[mail["id"]]
 		del globaltmp[mail["id"]]
@@ -1528,7 +1588,7 @@ def test_date(mail):
 	res = None
 	mail["tests"]["date"] = 1
 
-	if mail["header"].has_key("Date"):
+	if "Date" in mail["header"]:
 		envdate=parse(mail["header"]["Date"])
 		nowdate=datetime.datetime.now(tz.UTC)
 
@@ -1553,7 +1613,7 @@ def test_crc(mail):
 	res = None
 	mail["tests"]["crc"] = 0
 
-	if mail.has_key("checksum") and msgbase.has_key(mail["checksum"]):
+	if "checksum" in mail and mail["checksum"] in msgbase:
 		if msgbase[mail["checksum"]]['block'] > 5:
 			res = (conf["actions"]["crc"], ">5 block/%dh" % (conf["main"]["crchours"]))
 		elif msgbase[mail["checksum"]]['block'] > 1:
@@ -1589,7 +1649,7 @@ def test_bayesian(mail):
 ###
 ### SpamMilter Class 
 ###
-class SpamMilter(Milter.Milter):
+class SpamMilter(Milter.Base):
 	def maildef(self):
 		return {
 			"smtpcmds": [ ],
@@ -1627,8 +1687,9 @@ class SpamMilter(Milter.Milter):
 		try:
 ## Temp file in DISK
 			if not os.path.exists(conf["main"]["tmpdir"]): mkdir(conf["main"]["tmpdir"])
-			self.tmp = open("%s/%s" % (conf["main"]["tmpdir"], self.tmpname),"w+b")
-		except IOError, (errno, strerror):
+			self.tmp = open("%s/%s" % (conf["main"]["tmpdir"], self.tmpname),"w+")
+		except IOError as xxx_todo_changeme3:
+			(errno, strerror) = xxx_todo_changeme3.args
 			debug("Temp file failure (%s: %s)" % (errno, strerror), LOG_DEBUG, id=self.id)
 		except:
 			debug("Temp file (%s) failure" % "%s/%s" % (conf["main"]["tmpdir"], self.tmpname), LOG_DEBUG, id=self.id)
@@ -1649,9 +1710,9 @@ class SpamMilter(Milter.Milter):
 			self.mail = None
 			return
 
-		if conf["main"]["crcsave"] and self.mail.has_key("checksum"):
+		if conf["main"]["crcsave"] and "checksum" in self.mail:
 			crc = self.mail["checksum"]
-			if not msgbase.has_key(crc):
+			if crc not in msgbase:
 				msgbase[crc] = {
 					'seen':		0,
 					'block':	0,
@@ -1666,34 +1727,34 @@ class SpamMilter(Milter.Milter):
 			else:
 				msgbase[crc]['pass'] += 1
 
-		if conf["main"]["timeme"] and self.mail["timer"].has_key("timepass"): self.mail["timer"]["timepass"] = str("%.4f") % timeme(self.mail["timer"]["timepass"], id=self.id, title="TTimer")
+		if conf["main"]["timeme"] and "timepass" in self.mail["timer"]: self.mail["timer"]["timepass"] = str("%.4f") % timeme(self.mail["timer"]["timepass"], id=self.id, title="TTimer")
 
 ###
 ### USED FOR DEBUG!
 ###
 		if self.mail["size"] > 0:
-			if not self.mail["header"].has_key("From"):
-				if self.mail["header"].has_key("from"):
+			if "From" not in self.mail["header"]:
+				if "from" in self.mail["header"]:
 					self.mail["header"]["From"] = self.mail["header"]["from"]
 				else:
 					self.mail["header"]["From"] = ""
-			if not self.mail["header"].has_key("To"):
-				if self.mail["header"].has_key("to"):
+			if "To" not in self.mail["header"]:
+				if "to" in self.mail["header"]:
 					self.mail["header"]["To"] = self.mail["header"]["to"]
 				else:
 					self.mail["header"]["To"] = ""
 			if conf["main"]["verbose"] == 6 or (conf["runtime"]["offline"] and conf["main"]["offline"] < 7):
 				print("")
 				print("#############################################################################")
-				print("Received:"),
+				print(("Received:"), end=' ')
 				for rec in self.mail["received"]:
-					print("\n\t"),
-					if self.mail["received"][rec].has_key("dns"):
-						print("%s" % (self.mail["received"][rec]["dns"])),
-					print(" [%s]" % (self.mail["received"][rec]["ip"])),
-					if self.mail["received"][rec].has_key("helo"):
-						print(" (%s)" % (self.mail["received"][rec]["helo"])),
-				print("""
+					print(("\n\t"), end=' ')
+					if "dns" in self.mail["received"][rec]:
+						print(("%s" % (self.mail["received"][rec]["dns"])), end=' ')
+					print((" [%s]" % (self.mail["received"][rec]["ip"])), end=' ')
+					if "helo" in self.mail["received"][rec]:
+						print((" (%s)" % (self.mail["received"][rec]["helo"])), end=' ')
+				print(("""
 
 ID:\t\t%s
 Mail From:\t%s
@@ -1713,35 +1774,35 @@ self.mail["header"]["Date"],
 self.mail["subject"][0:80],
 self.mail["size"],
 self.mail["checksum"]
-))
+)))
 				if conf["main"]["crcsave"]:
-					print("\t\t", msgbase[self.mail["checksum"]])
+					print(("\t\t", msgbase[self.mail["checksum"]]))
 				print("")
 				tc = 0
-				print("%s\t\t%s\t%s\t%s" % ("Test", "Time", "Tests", "Action and why"))
+				print(("%s\t\t%s\t%s\t%s" % ("Test", "Time", "Tests", "Action and why")))
 				print("-----------------------------------------------------------------------------")
 				for t in self.mail["tests"]:
-					if self.mail["timer"].has_key(t):
-						print("%-15s %s\t" % (t, self.mail["timer"][t])),
+					if t in self.mail["timer"]:
+						print(("%-15s %s\t" % (t, self.mail["timer"][t])), end=' ')
 					else:
-						print("%-15s %s\t" % ("", "")),
-					print("%5d\t" % (self.mail["tests"][t])),
+						print(("%-15s %s\t" % ("", "")), end=' ')
+					print(("%5d\t" % (self.mail["tests"][t])), end=' ')
 					tc += self.mail["tests"][t]
-					if self.mail["result"].has_key(t):
+					if t in self.mail["result"]:
 						if self.mail["result"][t] != None:
-							print("%s\t" % (self.mail["result"][t][0])),
-							print("%s" % (oneliner(self.mail["result"][t][1][0:80]))),
+							print(("%s\t" % (self.mail["result"][t][0])), end=' ')
+							print(("%s" % (oneliner(self.mail["result"][t][1][0:80]))), end=' ')
 						else:
-							print(""),
+							print((""), end=' ')
 					print("")
 				print("-----------------------------------------------------------------------------")
-				print("%s\t\t%s\t" % ("TOTAL:", self.mail["timer"]["timepass"])),
-				print("%5d\t" % (tc)),
-				print("%s" % (self.mail["action"][0])),
+				print(("%s\t\t%s\t" % ("TOTAL:", self.mail["timer"]["timepass"])), end=' ')
+				print(("%5d\t" % (tc)), end=' ')
+				print(("%s" % (self.mail["action"][0])), end=' ')
 				print("")
 				print("")
 			if conf["runtime"]["offline"] and len(loglines) > 0:
-				print(loglines.pop(0))
+				print((loglines.pop(0)))
 			sys.stdout.flush()
 ###
 ### /USED FOR DEBUG!
@@ -1769,13 +1830,13 @@ self.mail["checksum"]
 	def abort(self):
 		debug("SpamMilter.abort()", LOG_DEBUG, id=self.id)
 		self._cleanup()
-		return CONTINUE
+		return Milter.CONTINUE
 
 	def close(self):
 		debug("SpamMilter.close()", LOG_DEBUG, id=self.id)
 		if self.mail: self.mail["smtpcmds"].append("close")
 		self._cleanup()
-		return CONTINUE
+		return Milter.CONTINUE
 
 	def connect(self,host,family,hostaddr):
 		if conf["main"]["timeme"]: timer = timeme()
@@ -1785,7 +1846,7 @@ self.mail["checksum"]
 		self.mail["received"][1]["ip"] = hostaddr[0]
 		self.mail["received"][1]["dns"] = reversedns(hostaddr[0], id=self.id)
 		if conf["main"]["timeme"]: self.mail["timer"]["smtp_connect"] = str("%.4f") % timeme(timer, id=self.id, noshow=True)
-		return CONTINUE
+		return Milter.CONTINUE
 
 	def hello(self,host):
 		if conf["main"]["timeme"]: timer = timeme()
@@ -1794,7 +1855,7 @@ self.mail["checksum"]
 		self.mail["received"][1]["helo"] = host
 		self.reuse = self.mail["received"][1]
 		if conf["main"]["timeme"]: self.mail["timer"]["smtp_hello"] = str("%.4f") % timeme(timer, id=self.id, noshow=True)
-		return CONTINUE
+		return Milter.CONTINUE
 
 	def envfrom(self,mailfrom,*vars):
 		if not self.mail or "eom" in self.mail["smtpcmds"]:
@@ -1811,7 +1872,7 @@ self.mail["checksum"]
 		if self.mail: self.mail["smtpcmds"].append("envfrom")
 
 		if mailfrom == "<>":
-			if self.mail["received"][1].has_key("dns"):
+			if "dns" in self.mail["received"][1]:
 				mailfrom = "<MAILER-DAEMON@%s>" % (self.mail["received"][1]["dns"])
 			else:
 				mailfrom = "<MAILER-DAEMON@[%s]>" % (self.mail["received"][1]["ip"])
@@ -1825,7 +1886,7 @@ self.mail["checksum"]
 
 		if conf["main"]["timeme"]: self.mail["timer"]["smtp_envfrom"] = str("%.4f") % (timeme(timer, id=self.id, noshow=True))
 
-		return CONTINUE
+		return Milter.CONTINUE
 
 	def envrcpt(self,rcpt,*vars):
 		if conf["main"]["timeme"]: timer = timeme()
@@ -1841,11 +1902,11 @@ self.mail["checksum"]
 			self.mail["to"] = parse_addrs(rcpt, id=self.id)
 
 		if conf["main"]["timeme"]:
-			if self.mail["timer"].has_key("smtp_envrcpt"):
+			if "smtp_envrcpt" in self.mail["timer"]:
 				self.mail["timer"]["smtp_envrcpt"] = str("%.4f") % (float(self.mail["timer"]["smtp_envrcpt"]) + timeme(timer, id=self.id, noshow=True))
 			else:
 				self.mail["timer"]["smtp_envrcpt"] = str("%.4f") % (timeme(timer, id=self.id, noshow=True))
-		return CONTINUE
+		return Milter.CONTINUE
 
 	def header(self,field,value):
 		if conf["main"]["timeme"]: timer = timeme()
@@ -1869,7 +1930,7 @@ self.mail["checksum"]
 				break
 
 			onelinerh = oneliner(value, id=self.id).strip()
-			if self.mail["header"].has_key(field) and lfield not in [ "subject", "date" ]:
+			if field in self.mail["header"] and lfield not in [ "subject", "date" ]:
 				if type(self.mail["header"][field]) is not list:
 					tmp = self.mail["header"][field]
 					del self.mail["header"][field]
@@ -1885,7 +1946,7 @@ self.mail["checksum"]
 				break
 
 			if lfield == "received":
-				a = re.compile("(?:from ((?P<ip3>[\d\.]+)|(?P<helo>\S+)) (?:\(helo (?P<helo2>[\w\d\.]+?)\) )?((?:\(?(?:\w+@)?(?:\S+(?: )?)?)?(?:(?:\[)(?P<ip>[\d.]+?)(?:\](?:[: ].+?)?))\)? )?|(\((?P<ip2>[\d\.]+?)\) )?)(?:\(using .*?\))?by (?P<by>.+?)(?: \(.+?\))? (with|id) ").match(onelinerh.lower())
+				a = re.compile(r"(?:from ((?P<ip3>[\d\.]+)|(?P<helo>\S+)) (?:\(helo (?P<helo2>[\w\d\.]+?)\) )?((?:\(?(?:\w+@)?(?:\S+(?: )?)?)?(?:(?:\[)(?P<ip>[\d.]+?)(?:\](?:[: ].+?)?))\)? )?|(\((?P<ip2>[\d\.]+?)\) )?)(?:\(using .*?\))?by (?P<by>.+?)(?: \(.+?\))? (with|id) ").match(onelinerh.lower())
 				if a == None:
 					break
 				reclen = len(self.mail["received"])+1
@@ -1907,11 +1968,11 @@ self.mail["checksum"]
 			break
 
 		if conf["main"]["timeme"]:
-			if self.mail["timer"].has_key("smtp_header"):
+			if "smtp_header" in self.mail["timer"]:
 				self.mail["timer"]["smtp_header"] = str("%.4f") % (float(self.mail["timer"]["smtp_header"]) + timeme(timer, id=self.id, noshow=True))
 			else:
 				self.mail["timer"]["smtp_header"] = str("%.4f") % (timeme(timer, id=self.id, noshow=True))
-		return CONTINUE
+		return Milter.CONTINUE
 
 	def eoh(self):
 		if conf["main"]["timeme"]: timer = timeme()
@@ -1919,10 +1980,9 @@ self.mail["checksum"]
 		if self.mail: self.mail["smtpcmds"].append("eoh")
 ## Received fix was here. Also it would be safe to do accept, block, ipfromto, dyndns, rbl, headers test here.
 		if conf["main"]["timeme"]: self.mail["timer"]["smtp_eoh"] = str("%.4f") % (timeme(timer, id=self.id, noshow=True))
-		return CONTINUE
+		return Milter.CONTINUE
 
 	def body(self,chunk):
-		global UseSHA
 		if conf["main"]["timeme"]: timer = timeme()
 		debug("SpamMilter.body() (chunk size: %d)" % len(chunk), LOG_DEBUG, id=self.id)
 
@@ -1932,18 +1992,17 @@ self.mail["checksum"]
 # Make SHA checksum only for first chunk of message, maximum size of chunk
 # seems to be 65535. So if first 64K bytes of message is same, so is
 # checksum. But usually this is not needed.
-# For python > 2.4
-			if UseSHA > 24:
-				self.mail["checksum"] = hashlib.sha1(chunk).hexdigest()
-# For Python >= 2.4
-			elif UseSHA > 0:
-				self.mail["checksum"] = sha.new(chunk).hexdigest()
+			if isinstance(chunk, str):
+				chunk = chunk.encode("utf-8")
+			self.mail["checksum"] = hashlib.sha1(chunk).hexdigest()
 
 		self.mail["size"] += len(chunk)
+		if isinstance(chunk, bytes):
+			chunk = chunk.decode("utf-8", errors="replace")
 		if self.tmp: self.tmp.write(chunk)
 
 		if conf["main"]["timeme"]: self.mail["timer"]["smtp_body"] = str("%.4f") % (timeme(timer, id=self.id, noshow=True))
-		return CONTINUE
+		return Milter.CONTINUE
 
 	def eom(self):
 		if conf["main"]["timeme"]: timer = timeme()
@@ -1969,7 +2028,7 @@ Your test message was received
 				return Milter.ACCEPT
 
 ## Authenticated sender, accept without logging
-		if self.mail.has_key("smtp_auth"):
+		if "smtp_auth" in self.mail:
 			debug("\tskip, authenticated", LOG_DEBUG, id=self.id)
 			return Milter.ACCEPT
 
@@ -1981,18 +2040,20 @@ Your test message was received
 			return Milter.CONTINUE
 		else:
 			self.mail["rules"] = is_listed(self.mail["todomain"], conf["filter"]["rules"], id=self.id)
-
 		if self.mail["size"] == 0 and self.mail["subject"] == "":
 			self.mail["type"] = "empty"
 			return Milter.DISCARD
 
 		subchar = []
 		self.mail["subject"] == "(none)"
-		try:
+#		try:
+		if 1:
 			if self.tmp:
 				self.tmp.seek(0)
 				msg = message_from_file(self.tmp)
 				(subj, subchar) = decode_header(msg["subject"])[0]
+				if isinstance(subj, bytes):
+					subj = subj.decode(subchar or "utf-8", errors="replace")
 				self.mail["subject"] = oneliner(stripUnprintable(subj), id=self.id)
 				self.mail["rawsubject"] = oneliner(stripUnprintable(msg["subject"]), id=self.id)
 				self.mail["raw"] = """%s""" % msg
@@ -2000,31 +2061,35 @@ Your test message was received
 				charset = msg.get_charsets()
 				charset.append(subchar)
 				self.mail["charset"]=uniq(charset)
+		try: pass
 		except:
 			debug("EOM Exception, REJECTED", LOG_ERR, id=self.id)
-		try: self.setreply("421", "4.2.1", "Error while parsing MIME structre of message, try again.")
-		except: pass
-#			return Milter.REJECT
-		debug("eom(): %s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR, id=self.id, trace=False)
-		if self.tmp:
-			self.tmp.close()
-			mv(self.tmp.name, "/tmp/%s" % (self.tmpname))
-			save_vars(self.mail, "/tmp/%s.var" % (self.tmpname), id=self.mail["id"])
-			debug("saved as /tmp/%s" % (self.tmpname), LOG_ERR, id=self.id, trace=False)
-		return Milter.CONTINUE
-# If message is aborted, there probably is not self. So
+			try: self.setreply("421", "4.2.1", "Error while parsing MIME structre of message, try again.")
+			except Exception as e:
+				exc_type, exc_value = type(e), e
+				debug("eom(): %s: %s" % (exc_type, exc_value), LOG_ERR, id=self.id, trace=False)
+				if self.tmp:
+					self.tmp.close()
+					mv(self.tmp.name, "/tmp/%s" % (self.tmpname))
+					save_vars(self.mail, "/tmp/%s.var" % (self.tmpname), id=self.mail["id"])
+					debug("saved as /tmp/%s" % (self.tmpname), LOG_ERR, id=self.id, trace=False)
+#				return Milter.REJECT
+				return Milter.CONTINUE
 
+# If message is aborted, there probably is not self. So
 		if self.mail:
 			fix_received(self.mail)
 		else:
 			reason = "Error while starting prosessing"
-		try: self.setreply("451", "4.5.1", reason)
-		except: pass
-		debug("Milter.REJECT (451 4.5.1 - %s)" % (reason), LOG_DEBUG, id=self.mail["id"])
-		return REJECT
+			try:
+				self.setreply("451", "4.5.1", reason)
+			except: pass
+			debug("Milter.REJECT (451 4.5.1 - %s)" % (reason), LOG_DEBUG, id=self.mail["id"])
+			return Milter.REJECT
 ##
 ## Now message is received and processed. Fun part begins now, testing.
 ##
+		debug("Processing incoming message", LOG_DEBUG, id=self.mail["id"])
 		self.mail["result"] = {}
 		self.mail["action"] = [ "pass" ]
 		flags = []
@@ -2049,9 +2114,10 @@ Your test message was received
 					debug("  break match found %s %s" % (ret[0].lower(), ret[0][-1]), LOG_DEBUG, id=self.id)
 					break
 				continue
-			except:
+			except Exception as e:
+				exc_type, exc_value = type(e), e
 				debug("ERROR: test_%s failed" % (test), LOG_DEBUG)
-				debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_DEBUG, id=self.id, trace=True)
+				debug("%s: %s" % (exc_type, exc_value), LOG_DEBUG, id=self.id, trace=True)
 				if conf["runtime"]["offline"]:
 					save_vars(self.mail, "/tmp/%s.var" % (self.tmpname), id=self.mail["id"])
 			continue
@@ -2123,7 +2189,7 @@ Your test message was received
 
 				log += " %d" % (int(self.mail["size"]))
 				log += " %s" % (self.mail["received"][1]["ip"])
-				if self.mail["received"][1].has_key("dns"):
+				if "dns" in self.mail["received"][1]:
 					log += " (%s)" % (self.mail["received"][1]["dns"])
 				else:
 					log += " ()"
@@ -2147,16 +2213,16 @@ Your test message was received
 					try: self.setreply("550", "5.7.1", reason)
 					except: pass
 					debug("Milter.REJECT (550 5.7.1 - %s)" % (reason), LOG_DEBUG, id=self.mail["id"])
-					return REJECT
+					return Milter.REJECT
 
 			elif action in ['delete','discard','block']:
 				if not (domainrule(self.mail, 'watch', conf["main"]["watchmode"]) or domainrule(self.mail, 'flagall')):
 					debug("Milter.DISCARD (%s)" % (reason), LOG_DEBUG, id=self.mail["id"])
-					return DISCARD
+					return Milter.DISCARD
 
 			if not domainrule(self.mail, 'watch', conf["main"]["watchmode"]):
 				if action in ['flag','warn'] or (domainrule(self.mail, 'flagall') and action in ['reject','delete','discard','block']):
-					if not re.search("{SPAM}: ", self.mail["subject"], re.IGNORECASE):
+					if not re.search(r"{SPAM}: ", self.mail["subject"], re.IGNORECASE):
 						if conf["runtime"]["offline"]: debug("Subject: {SPAM}: %s" % (self.mail["subject"]), LOG_DEBUG, id=self.mail["id"])
 						try: self.chgheader("Subject", 1, "{SPAM}: %s" % (self.mail["subject"]))
 						except: pass
@@ -2166,9 +2232,9 @@ Your test message was received
 				self.mail["action"].insert(0, "%s in WATCH MODE" % (self.mail["action"][0]))
 
 			debug("Milter.ACCEPT", LOG_DEBUG, id=self.mail["id"])
-			return ACCEPT
+			return Milter.ACCEPT
 		debug("Milter.CONTINUE", LOG_DEBUG, id=self.mail["id"])
-		return CONTINUE
+		return Milter.CONTINUE
 
 ### List of Milter commands:
 ##	def setreply(self,rcode,xcode=None,msg=None,*ml):
@@ -2237,14 +2303,14 @@ def Tconfig(childname=None):
 			if conf["main"]["sspammdir"] and conf["main"]["sspammdir"][0] not in ["/", "."]: conf["main"]["sspammdir"] = "%s/%s" % (conf["runtime"]["confpath"], conf["main"]["sspammdir"])
 
 			for s in ["logfile", "rrdfile", "crcfile", "savedir", "pid"]:
-				if conf["main"].has_key(s) and conf["main"][s]:
+				if s in conf["main"] and conf["main"][s]:
 					if conf["main"][s] == ".":
 						conf["main"][s] = conf["main"]["sspammdir"]
 					if conf["main"]["sspammdir"]:
-						conf["main"][s] = re.sub("%s", conf["main"]["sspammdir"], conf["main"][s])
-					conf["main"][s] = re.sub("%n", conf["main"]["name"], conf["main"][s])
-					conf["main"][s] = re.sub("%c", conf["runtime"]["confpath"], conf["main"][s])
-					conf["main"][s] = re.sub("%h", hostname, conf["main"][s])
+						conf["main"][s] = re.sub(r"%s", conf["main"]["sspammdir"], conf["main"][s])
+					conf["main"][s] = re.sub(r"%n", conf["main"]["name"], conf["main"][s])
+					conf["main"][s] = re.sub(r"%c", conf["runtime"]["confpath"], conf["main"][s])
+					conf["main"][s] = re.sub(r"%h", hostname, conf["main"][s])
 
 					if conf["main"][s] and conf["main"][s][0] not in ["/", "."]: conf["main"][s] = "%s/%s" % (conf["main"]["sspammdir"], conf["main"][s])
 
@@ -2387,8 +2453,9 @@ def Trrd(childname=None):
 			try:
 				rrdtool.update(conf["main"]["rrdfile"], "%s:%d:%d:%d" % (timestamp, tmp["ham"], tmp["unsure"], tmp["spam"]))
 				debug("RRD Update %s: Ham: %s, Unsure: %s, Spam: %s" % (timestamp, tmp["ham"], tmp["unsure"], tmp["spam"]), LOG_ERR)
-			except:
-				debug("RRD Update: %s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR)
+			except Exception as e:
+				exc_type, exc_value = type(e), e
+				debug("RRD Update: %s: %s" % (exc_type, exc_value), LOG_ERR)
 # Statistics updated, sleep for about 4 minutes.
 			time.sleep(300-60)
 		elif int(time.strftime('%S')) >= 58:
@@ -2413,8 +2480,8 @@ def cleanquit():
 
 	if conf["main"]["verbose"] in [3, 4, 5]:
 		for a in ['confpath','conftime','logtime']:
-			if conf["runtime"].has_key(a): del conf["runtime"][a]
-		print(show_vars(conf["runtime"]))
+			if a in conf["runtime"]: del conf["runtime"][a]
+		print((show_vars(conf["runtime"])))
 	sys.stdout.flush()
 	time.sleep(1)
 	os._exit(0)
@@ -2433,7 +2500,7 @@ def main():
 #			pass
 
 	if conf["main"]["childs"]:
-		thread.start_new_thread(Tconfig,("Configuration Loader",))
+		_thread.start_new_thread(Tconfig,("Configuration Loader",))
 	else:
 		signal(SIGHUP , Tconfig)   # 1
 		signal(SIGINT , cleanquit) # ^C
@@ -2454,7 +2521,8 @@ def main():
 #	if(not makepid(conf["main"]["pid"])): cleanquit()
 
 	Milter.factory = SpamMilter
-	Milter.set_flags(ADDRCPT + DELRCPT + ADDHDRS + CHGHDRS + CHGBODY)
+	Milter.set_flags(Milter.ADDRCPT + Milter.DELRCPT + Milter.ADDHDRS + Milter.CHGHDRS + Milter.CHGBODY)
+	Milter.set_exception_policy(Milter.CONTINUE)
 
 	debug("Spam Filter started", LOG_INFO)
 #	if not userrd: debug("WARNING! rrdtool module not loaded, RRD disabled", LOG_ALERT)
@@ -2466,10 +2534,10 @@ def main():
 ## clock thread, that calls functions like RRD update.
 	if conf["main"]["childs"]:
 #		thread.start_new_thread(Tclock,("Clock",))
-		thread.start_new_thread(Tlogger,("Logger",))
+		_thread.start_new_thread(Tlogger,("Logger",))
 		if userrd:
-			thread.start_new_thread(Trrd,("RRD",))
-		thread.start_new_thread(Tcrc,("CRC",))
+			_thread.start_new_thread(Trrd,("RRD",))
+		_thread.start_new_thread(Tcrc,("CRC",))
 #		thread.start_new_thread(Tstats,("Stats",))
 #	else:
 #		debug("Logging, RRD, etc. are disabled in foreground mode.", LOG_ALERT)
@@ -2478,8 +2546,9 @@ def main():
 		Milter.runmilter(conf["main"]["name"],conf["main"]["port"],300)
 	except SystemExit:
 		pass
-	except:
-		debug("%s: %s" % (sys.exc_type, sys.exc_value), LOG_ERR)
+	except Exception as e:
+		exc_type, exc_value = type(e), e
+		debug("%s: %s" % (exc_type, exc_value), LOG_ERR)
 	cleanquit()
 
 ##
@@ -2493,7 +2562,7 @@ class test:
 			if os.path.exists("%s.var" % file):
 				file = "%s.var" % file
 			else:
-				print("File %s not found!" % file)
+				print(("File %s not found!" % file))
 				sys.exit(2)
 
 		# Load Configuration
@@ -2509,8 +2578,8 @@ class test:
 		self.mail = load_vars("%s" % file)
 		# Open temp file and write raw message into it
 
-		if self.mail.has_key("raw") and self.mail["raw"]:
-			self.tmp = open("%s.tmp" % file, "w+b")
+		if "raw" in self.mail and self.mail["raw"]:
+			self.tmp = open("%s.tmp" % file, "w+")
 			self.tmp.write(self.mail["raw"])
 			self.tmp.close()
 			# Reopen tmp file as read-only and move to end
@@ -2525,10 +2594,10 @@ class test:
 		m = SpamMilter()
 		# Read connect information from variables, and simulate
 		# SMTP-connection.
-		if not self.mail["received"][1].has_key("dns"):
+		if "dns" not in self.mail["received"][1]:
 			self.mail["received"][1]["dns"] = "[%s]" % self.mail["received"][1]["ip"]
 		m.connect(self.mail["received"][1]["dns"],None,[self.mail["received"][1]["ip"]])
-		if self.mail["received"][1].has_key("helo"):
+		if "helo" in self.mail["received"][1]:
 			m.hello(self.mail["received"][1]["helo"])
 		else:
 			m.hello(self.mail["received"][1]["dns"])
@@ -2590,18 +2659,18 @@ if __name__ == "__main__":
 	except:
 		hostname = gethostname()
 
-#       debug("Use RRD: %s" % (userrd), LOG_INFO)
+#	debug("Use RRD: %s" % (userrd), LOG_INFO)
 	debug("Use DNS: %s" % (usedns), LOG_INFO)
 	conf["runtime"]["bindir"] = sys.argv[0][0:sys.argv[0].rfind("/")]
 	if not sys.argv[1:]:
 		main()
 	elif sys.argv[1:][0] == "pid":
 		Tconfig()
-		print(conf["main"]["pid"])
+		print((conf["main"]["pid"]))
 		sys.exit(0)
 	elif sys.argv[1:][0] == "sspammdir":
 		Tconfig()
-		print(conf["main"]["sspammdir"])
+		print((conf["main"]["sspammdir"]))
 		sys.exit(0)
 	elif sys.argv[1:][0] == "test":
 		if len(sys.argv) >= 3: test(sys.argv[2:][0]).run(sys.argv[1:][0])

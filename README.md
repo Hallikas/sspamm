@@ -71,7 +71,7 @@ hallikas.com: accept, date, block, headers, ipfromto, wordscan
 10: (?#greylist:300).*(signup|login|verify).*
 ```
 
-### Greylisting
+### Greylisting (ToDo feature)
 Greylisting temporarily rejects emails from unknown senders with a `450 Try again later` response. For example, emails from `.xyz` domains are greylisted for 600 seconds, while spam keywords like "viagra" trigger immediate deletion.
 
 ## Usage

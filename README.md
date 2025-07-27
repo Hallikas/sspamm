@@ -1,3 +1,8 @@
+New Python3 compatible version is under development. I've just started it, so it is not on working stage yet. But you can follow development on:
+https://github.com/Hallikas/sspamm3
+
+
+
 # sspamm
 Semi's Spam Milter (sendmail/postfix filter)
 
